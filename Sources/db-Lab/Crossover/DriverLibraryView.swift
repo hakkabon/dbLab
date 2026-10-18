@@ -59,6 +59,9 @@ struct DriverLibraryView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
+                                Text("\(driver.measurements.count) measured datasets")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("Edit") {
@@ -126,6 +129,10 @@ private struct DriverEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SpeakerDriver
     @State private var saveError: String?
+    @State private var measurementError: String?
+    @State private var measurementSourceReference = ""
+    @State private var measurementImportKind: DriverMeasurementKind?
+    @State private var isMeasurementImporterPresented = false
     let onSave: (SpeakerDriver) throws -> Void
 
     init(driver: SpeakerDriver?, onSave: @escaping (SpeakerDriver) throws -> Void) {
@@ -173,6 +180,64 @@ private struct DriverEditorView: View {
                     numberField("Sensitivity (2.83 V / 1 m)", value: $draft.sensitivityDb, unit: "dB")
                 }
 
+                Section("Measured data") {
+                    TextField("Measurement source or conditions", text: $measurementSourceReference)
+                    Text("Import whitespace-, tab-, or comma-separated text: frequency (Hz), magnitude (dB SPL for FRD or Ω for ZMA), and optional phase (degrees).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Import FRD", systemImage: "waveform") {
+                            beginMeasurementImport(.frequencyResponse)
+                        }
+                        .disabled(measurementSourceReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Import ZMA", systemImage: "point.3.connected.trianglepath.dotted") {
+                            beginMeasurementImport(.impedance)
+                        }
+                        .disabled(measurementSourceReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    if draft.measurements.isEmpty {
+                        Text("No measured response or impedance data attached.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(draft.measurements) { measurement in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("\(measurement.kind.title) · \(measurement.sourceFileName)")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        draft.measurements.removeAll { $0.id == measurement.id }
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Remove \(measurement.sourceFileName)")
+                                }
+                                Text(measurement.sourceReference)
+                                    .font(.caption)
+                                Text("\(measurement.points.count) points · \(measurement.points.first?.frequencyHz.formatted() ?? "—")–\(measurement.points.last?.frequencyHz.formatted() ?? "—") Hz · \(measurement.kind.magnitudeUnit)")
+                                    .font(.caption)
+                                Text(measurement.hasPhaseData ? "Phase included" : "Phase not provided")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Imported \(measurement.importedAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+
+                    if let measurementError {
+                        Label(measurementError, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                    }
+                }
+
                 if let message = draft.validationMessage {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -204,7 +269,47 @@ private struct DriverEditorView: View {
                 }
             }
             .frame(minWidth: 420, minHeight: 620)
+            .fileImporter(
+                isPresented: $isMeasurementImporterPresented,
+                allowedContentTypes: [.plainText, .commaSeparatedText, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                importMeasurement(from: result)
+            }
         }
+    }
+
+    private func beginMeasurementImport(_ kind: DriverMeasurementKind) {
+        measurementImportKind = kind
+        measurementError = nil
+        isMeasurementImporterPresented = true
+    }
+
+    private func importMeasurement(from result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first,
+                  let kind = measurementImportKind else {
+                return
+            }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            let data = try Data(contentsOf: url)
+            let measurement = try DriverMeasurementParser.parse(
+                data,
+                kind: kind,
+                fileName: url.lastPathComponent,
+                sourceReference: measurementSourceReference
+            )
+            draft.measurements.append(measurement)
+            measurementError = nil
+        } catch {
+            if (error as? CocoaError)?.code != .userCancelled {
+                measurementError = error.localizedDescription
+            }
+        }
+        measurementImportKind = nil
     }
 
     private func numberField(_ title: String, value: Binding<Double>, unit: String = "") -> some View {

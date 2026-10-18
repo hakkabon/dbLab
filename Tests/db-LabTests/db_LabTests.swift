@@ -222,7 +222,15 @@ import Testing
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let libraryURL = directory.appendingPathComponent("drivers.json")
-    let driver = sampleSpeakerDriver()
+    var driver = sampleSpeakerDriver()
+    driver.measurements = [
+        try DriverMeasurementParser.parse(
+            Data("100 80 -12\n1000 87 -3\n".utf8),
+            kind: .frequencyResponse,
+            fileName: "woofer.frd",
+            sourceReference: "Manufacturer measurement, 2.83 V / 1 m"
+        )
+    ]
 
     let library = DriverLibrary(fileURL: libraryURL)
     try library.save(driver)
@@ -234,6 +242,8 @@ import Testing
     let imported = DriverLibrary(fileURL: directory.appendingPathComponent("imported.json"))
     try imported.importJSON(try library.exportJSON())
     #expect(imported.drivers == [driver])
+    #expect(imported.drivers[0].measurements[0].sourceReference == "Manufacturer measurement, 2.83 V / 1 m")
+    #expect(imported.drivers[0].measurements[0].points.count == 2)
     try imported.delete(driver)
     #expect(imported.drivers.isEmpty)
 }
@@ -248,6 +258,84 @@ import Testing
     driver.source = "Manufacturer datasheet"
     driver.fsHz = .infinity
     #expect(driver.validationMessage != nil)
+}
+
+@Test func frdMeasurementImportSortsPointsAndTracksProvenance() throws {
+    let measurement = try DriverMeasurementParser.parse(
+        Data("* Example FRD\nFrequency, SPL, Phase\n1000, 87.5, -22\n100, 79.0, -8\n".utf8),
+        kind: .frequencyResponse,
+        fileName: "woofer-response.frd",
+        sourceReference: "Manufacturer datasheet, 2.83 V / 1 m",
+        importedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    #expect(measurement.kind == .frequencyResponse)
+    #expect(measurement.sourceFileName == "woofer-response.frd")
+    #expect(measurement.sourceReference == "Manufacturer datasheet, 2.83 V / 1 m")
+    #expect(measurement.importedAt == Date(timeIntervalSince1970: 1_700_000_000))
+    #expect(measurement.hasPhaseData)
+    #expect(measurement.points.map(\.frequencyHz) == [100, 1_000])
+    #expect(measurement.points.map(\.magnitude) == [79, 87.5])
+}
+
+@Test func zmaMeasurementImportAcceptsTabSeparatedValuesWithoutPhase() throws {
+    let measurement = try DriverMeasurementParser.parse(
+        Data("\u{feff}10\t4.2\r\n100\t6.1\r\n".utf8),
+        kind: .impedance,
+        fileName: "/Users/test/woofer.zma",
+        sourceReference: "Impedance sweep, 20 C",
+        importedAt: Date(timeIntervalSince1970: 1)
+    )
+
+    #expect(measurement.sourceFileName == "woofer.zma")
+    #expect(measurement.points.count == 2)
+    #expect(measurement.points[0].frequencyHz == 10)
+    #expect(measurement.points[0].magnitude == 4.2)
+    #expect(!measurement.hasPhaseData)
+    #expect(measurement.points[0].phaseDegrees == 0)
+}
+
+@Test func measuredDataImportRejectsDuplicatesInvalidValuesAndInsufficientPoints() {
+    func parse(_ text: String, kind: DriverMeasurementKind = .frequencyResponse) throws -> DriverMeasurement {
+        try DriverMeasurementParser.parse(
+            Data(text.utf8),
+            kind: kind,
+            fileName: "test.dat",
+            sourceReference: "Test source"
+        )
+    }
+
+    #expect(throws: DriverMeasurementImportError.self) {
+        try parse("100 80\n100 81\n")
+    }
+    #expect(throws: DriverMeasurementImportError.self) {
+        try parse("100 0\n200 4\n", kind: .impedance)
+    }
+    #expect(throws: DriverMeasurementImportError.self) {
+        try parse("100 80\n")
+    }
+    #expect(throws: DriverMeasurementImportError.self) {
+        try parse("100 80 0\n200 82\n")
+    }
+    #expect(throws: DriverMeasurementImportError.self) {
+        try DriverMeasurementParser.parse(
+            Data("100 80\n200 81\n".utf8),
+            kind: .frequencyResponse,
+            fileName: "missing-source.frd",
+            sourceReference: " "
+        )
+    }
+}
+
+@Test func legacyDriverJSONDecodesWithoutMeasuredDataField() throws {
+    let encoded = try JSONEncoder().encode(sampleSpeakerDriver())
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    object.removeValue(forKey: "measurements")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try JSONDecoder().decode(SpeakerDriver.self, from: legacyData)
+    #expect(decoded.measurements.isEmpty)
+    #expect(decoded.validationMessage == nil)
 }
 
 @Test func acousticSimulationProducesFiniteResponsesForAllEnclosures() throws {

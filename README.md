@@ -59,7 +59,9 @@ The app compiles and runs without a Rust build.
 ### Driver Library
 1. Open **Speaker Drivers** in the sidebar and add manufacturer data or import a JSON library.
 2. Record the source (manufacturer datasheet URL or reference) with each driver. `Qts` is calculated from `Qes` and `Qms`.
-3. Export the complete local library as JSON for backup or transfer.
+3. In a driver's editor, import frequency response (`.frd`) or impedance (`.zma`) data as UTF-8 text with two or three columns: frequency (Hz), magnitude (dB SPL for FRD or Ω for ZMA), and optional phase (degrees). Commas, tabs, and whitespace are accepted; comment lines starting with `#`, `;`, `*`, or `//` are ignored.
+4. Record a source URL/reference or measurement conditions before importing. Each dataset retains its filename, source reference, import date, frequency points, and whether phase was supplied. Data must contain at least two finite, positive-frequency rows; duplicate frequencies and non-positive impedance magnitudes are rejected.
+5. Export the complete local library as JSON for backup or transfer.
 
 The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON import/export uses an array of driver records with the `SpeakerDriver` fields shown in the editor; imports merge records by ID.
 
@@ -69,7 +71,7 @@ The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON
 3. Set the crossover frequency and idealized Butterworth (6–24 dB/octave) or Linkwitz–Riley (12 or 24 dB/octave) alignment, then choose **Simulate acoustic response**.
 4. Review the individual branch and combined estimated SPL curves. Design the passive LCR network separately in the schematic.
 
-The acoustic model is an initial Thiele/Small low-frequency approximation, not a measurement-matched prediction. It assumes the entered driver sensitivity is flat outside the modeled enclosure behavior, idealized electrical crossover filters, equal acoustic-center timing, and no room effects, diffraction, port losses, cone breakup, or excursion limiting. Port length uses a conventional Helmholtz estimate with a simple end correction. For a 12 dB/octave Linkwitz–Riley alignment, the tweeter branch is polarity-inverted. The response plot does not yet solve the custom LCR schematic against a driver's complex impedance; Bessel crossovers and automatic passive-component synthesis are also not yet available.
+The acoustic model is an initial Thiele/Small low-frequency approximation, not a measurement-matched prediction. Imported FRD/ZMA datasets are stored with the driver but are not yet used by the response solver. The current model assumes the entered driver sensitivity is flat outside the modeled enclosure behavior, idealized electrical crossover filters, equal acoustic-center timing, and no room effects, diffraction, port losses, cone breakup, or excursion limiting. Port length uses a conventional Helmholtz estimate with a simple end correction. For a 12 dB/octave Linkwitz–Riley alignment, the tweeter branch is polarity-inverted. The response plot does not yet solve the custom LCR schematic against a driver's complex impedance; Bessel crossovers and automatic passive-component synthesis are also not yet available.
 
 Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, driver IDs, and schematic symbols and wires.
 

@@ -16,6 +16,66 @@ struct SpeakerDriver: Codable, Identifiable, Hashable {
     var xmaxMillimeters: Double
     var sensitivityDb: Double
     var notes: String = ""
+    var measurements: [DriverMeasurement] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case id, manufacturer, model, source, fsHz, qes, qms, vasLiters
+        case reOhms, leMilliHenries, sdSquareCentimeters, xmaxMillimeters
+        case sensitivityDb, notes, measurements
+    }
+
+    init(
+        id: UUID = UUID(),
+        manufacturer: String,
+        model: String,
+        source: String,
+        fsHz: Double,
+        qes: Double,
+        qms: Double,
+        vasLiters: Double,
+        reOhms: Double,
+        leMilliHenries: Double,
+        sdSquareCentimeters: Double,
+        xmaxMillimeters: Double,
+        sensitivityDb: Double,
+        notes: String = "",
+        measurements: [DriverMeasurement] = []
+    ) {
+        self.id = id
+        self.manufacturer = manufacturer
+        self.model = model
+        self.source = source
+        self.fsHz = fsHz
+        self.qes = qes
+        self.qms = qms
+        self.vasLiters = vasLiters
+        self.reOhms = reOhms
+        self.leMilliHenries = leMilliHenries
+        self.sdSquareCentimeters = sdSquareCentimeters
+        self.xmaxMillimeters = xmaxMillimeters
+        self.sensitivityDb = sensitivityDb
+        self.notes = notes
+        self.measurements = measurements
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        manufacturer = try values.decode(String.self, forKey: .manufacturer)
+        model = try values.decode(String.self, forKey: .model)
+        source = try values.decode(String.self, forKey: .source)
+        fsHz = try values.decode(Double.self, forKey: .fsHz)
+        qes = try values.decode(Double.self, forKey: .qes)
+        qms = try values.decode(Double.self, forKey: .qms)
+        vasLiters = try values.decode(Double.self, forKey: .vasLiters)
+        reOhms = try values.decode(Double.self, forKey: .reOhms)
+        leMilliHenries = try values.decode(Double.self, forKey: .leMilliHenries)
+        sdSquareCentimeters = try values.decode(Double.self, forKey: .sdSquareCentimeters)
+        xmaxMillimeters = try values.decode(Double.self, forKey: .xmaxMillimeters)
+        sensitivityDb = try values.decode(Double.self, forKey: .sensitivityDb)
+        notes = try values.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        measurements = try values.decodeIfPresent([DriverMeasurement].self, forKey: .measurements) ?? []
+    }
 
     var qts: Double {
         qes * qms / (qes + qms)
@@ -43,6 +103,9 @@ struct SpeakerDriver: Codable, Identifiable, Hashable {
               sensitivityDb.isFinite, sensitivityDb > 0,
               qts.isFinite, qts > 0 else {
             return "Enter finite, positive driver parameters. Le and Xmax may be zero."
+        }
+        if measurements.contains(where: { $0.validationMessage != nil }) {
+            return "Remove or correct invalid measured response or impedance data."
         }
         return nil
     }
