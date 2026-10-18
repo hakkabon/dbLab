@@ -150,11 +150,71 @@ import Testing
 }
 
 @Test @MainActor func appStateCreatesAndSelectsCrossoverProjects() {
-    let appState = AppState()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let appState = AppState(
+        driverLibrary: DriverLibrary(fileURL: directory.appendingPathComponent("drivers.json")),
+        projectStore: CrossoverProjectStore(fileURL: directory.appendingPathComponent("projects.json"))
+    )
     appState.newCrossover()
 
     #expect(appState.crossoverDocuments.count == 1)
     #expect(appState.selectedSidebarItem == .crossover(appState.crossoverDocuments[0].id))
+}
+
+@Test @MainActor func crossoverProjectsPersistVersionedSettingsAndSchematic() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let projectURL = directory.appendingPathComponent("projects.json")
+    let store = CrossoverProjectStore(fileURL: projectURL)
+    let appState = AppState(
+        driverLibrary: DriverLibrary(fileURL: directory.appendingPathComponent("drivers.json")),
+        projectStore: store
+    )
+    appState.newCrossover()
+    let project = try #require(appState.crossoverDocuments.first)
+    project.name = "Living Room Three-way"
+    project.targetFrequencyHz = 1_850
+    project.wooferEnclosure = .portedBox
+    project.wooferBoxVolumeLiters = 48
+    project.wooferPortTuningHz = 34
+    project.wooferPortDiameterCentimeters = 8
+    project.crossoverAlignment = .butterworth
+    project.crossoverOrder = 3
+    project.wooferDriverID = UUID(uuidString: "00000000-0000-0000-0000-000000000501")
+    let component = try #require(project.schematic.addComponent(
+        descriptorId: "inductor",
+        at: GridPoint(4, 2)
+    ))
+    project.schematic.addWire(WireSegment(points: [GridPoint(0, 0), GridPoint(3, 0)]))
+
+    try await Task.sleep(for: .milliseconds(150))
+
+    let data = try Data(contentsOf: projectURL)
+    let archive = try #require(
+        JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+    #expect(archive["schemaVersion"] as? Int == 1)
+
+    let restoredApp = AppState(
+        driverLibrary: DriverLibrary(fileURL: directory.appendingPathComponent("drivers.json")),
+        projectStore: store
+    )
+    let restored = try #require(restoredApp.crossoverDocuments.first)
+    #expect(restored.id == project.id)
+    #expect(restored.name == "Living Room Three-way")
+    #expect(restored.targetFrequencyHz == 1_850)
+    #expect(restored.wooferDriverID == project.wooferDriverID)
+    #expect(restored.wooferEnclosure == .portedBox)
+    #expect(restored.wooferBoxVolumeLiters == 48)
+    #expect(restored.wooferPortTuningHz == 34)
+    #expect(restored.wooferPortDiameterCentimeters == 8)
+    #expect(restored.crossoverAlignment == .butterworth)
+    #expect(restored.crossoverOrder == 3)
+    #expect(restored.schematic.symbols == [component])
+    #expect(restored.schematic.wires == project.schematic.wires)
 }
 
 @Test @MainActor func driverLibraryPersistsImportsExportsAndDeletesDrivers() throws {
@@ -256,6 +316,41 @@ import Testing
     let atCrossover = try #require(response.first { abs($0.frequencyHz - 1_280) < 0.001 })
 
     #expect(abs((atCrossover.totalDb - atCrossover.wooferDb) - 6.0206) < 0.01)
+}
+
+@Test func butterworthOrdersSumWithoutCrossoverCancellation() throws {
+    let driver = sampleSpeakerDriver()
+    for order in 1...4 {
+        let low = AcousticBranchSettings(
+            driver: driver,
+            enclosure: .closedBox,
+            boxVolumeLiters: 30,
+            portTuningHz: 40,
+            portDiameterCentimeters: 7,
+            baffleWidthMeters: 0.3,
+            band: .lowPass
+        )
+        let high = AcousticBranchSettings(
+            driver: driver,
+            enclosure: .closedBox,
+            boxVolumeLiters: 30,
+            portTuningHz: 40,
+            portDiameterCentimeters: 7,
+            baffleWidthMeters: 0.3,
+            band: .highPass
+        )
+        let response = try AcousticSimulator.simulate(
+            woofer: low,
+            tweeter: high,
+            crossoverFrequencyHz: 1_280,
+            alignment: .butterworth,
+            order: order
+        )
+        let atCrossover = try #require(response.first { abs($0.frequencyHz - 1_280) < 0.001 })
+
+        let expectedLevelDifference = order.isMultiple(of: 2) ? 6.0206 : 3.0103
+        #expect(abs((atCrossover.totalDb - atCrossover.wooferDb) - expectedLevelDifference) < 0.01)
+    }
 }
 
 @Test func portedBoxDesignCalculatesPracticalPortLength() {

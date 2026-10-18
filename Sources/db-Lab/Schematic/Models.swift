@@ -1,7 +1,7 @@
 import CoreGraphics
 import SwiftUI
 
-public struct GridPoint: Hashable {
+public struct GridPoint: Hashable, Codable {
     public let x: Int
     public let y: Int
     public static let gridSize: CGFloat = 20.0
@@ -28,7 +28,7 @@ public struct Net: Identifiable {
     public var isGround: Bool = false
 }
 
-public struct SymbolInstance: Identifiable, Equatable {
+public struct SymbolInstance: Identifiable, Equatable, Codable {
     public let id: UUID
     public var descriptorId: String
     public var refDes: String
@@ -53,7 +53,7 @@ public struct SymbolInstance: Identifiable, Equatable {
     }
 }
 
-public struct WireSegment: Identifiable, Equatable {
+public struct WireSegment: Identifiable, Equatable, Codable {
     public let id: UUID
     public var points: [GridPoint]
     
@@ -105,5 +105,12 @@ public class SchematicDocument: ObservableObject {
     
     public func rebuildConnectivity() {
         self.nets = ConnectivityBuilder.build(symbols: symbols, wires: wires)
+    }
+
+    public func restore(symbols: [SymbolInstance], wires: [WireSegment]) {
+        self.symbols = symbols
+        self.wires = wires
+        self.selectedSymbolID = nil
+        rebuildConnectivity()
     }
 }

@@ -41,6 +41,11 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $appState.selectedSidebarItem) {
+            if let persistenceError = appState.persistenceError {
+                Label(persistenceError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
             Section("Library") {
                 Label("Speaker Drivers", systemImage: "speaker")
                     .tag(SidebarItem.driverLibrary)

@@ -1,8 +1,9 @@
 import SwiftUI
+import Combine
 
 @MainActor
 final class CrossoverDocument: ObservableObject, Identifiable {
-    let id = UUID()
+    let id: UUID
 
     @Published var name = "Untitled Crossover"
     @Published var targetFrequencyHz = 2_500.0
@@ -24,6 +25,64 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var acousticResponse: [AcousticResponsePoint] = []
     @Published var simulationError: String?
     @Published var isSimulating = false
+    private var schematicSubscription: AnyCancellable?
+
+    init() {
+        id = UUID()
+        forwardSchematicChanges()
+    }
+
+    init(snapshot: CrossoverProjectSnapshot) {
+        id = snapshot.id
+        name = snapshot.name
+        targetFrequencyHz = snapshot.targetFrequencyHz
+        wooferDriverID = snapshot.wooferDriverID
+        tweeterDriverID = snapshot.tweeterDriverID
+        wooferEnclosure = snapshot.wooferEnclosure
+        tweeterEnclosure = snapshot.tweeterEnclosure
+        wooferBoxVolumeLiters = snapshot.wooferBoxVolumeLiters
+        tweeterBoxVolumeLiters = snapshot.tweeterBoxVolumeLiters
+        wooferPortTuningHz = snapshot.wooferPortTuningHz
+        tweeterPortTuningHz = snapshot.tweeterPortTuningHz
+        wooferPortDiameterCentimeters = snapshot.wooferPortDiameterCentimeters
+        tweeterPortDiameterCentimeters = snapshot.tweeterPortDiameterCentimeters
+        wooferBaffleWidthMeters = snapshot.wooferBaffleWidthMeters
+        tweeterBaffleWidthMeters = snapshot.tweeterBaffleWidthMeters
+        crossoverAlignment = snapshot.crossoverAlignment
+        crossoverOrder = snapshot.crossoverOrder
+        schematic.restore(symbols: snapshot.symbols, wires: snapshot.wires)
+        forwardSchematicChanges()
+    }
+
+    var snapshot: CrossoverProjectSnapshot {
+        CrossoverProjectSnapshot(
+            id: id,
+            name: name,
+            targetFrequencyHz: targetFrequencyHz,
+            wooferDriverID: wooferDriverID,
+            tweeterDriverID: tweeterDriverID,
+            wooferEnclosure: wooferEnclosure,
+            tweeterEnclosure: tweeterEnclosure,
+            wooferBoxVolumeLiters: wooferBoxVolumeLiters,
+            tweeterBoxVolumeLiters: tweeterBoxVolumeLiters,
+            wooferPortTuningHz: wooferPortTuningHz,
+            tweeterPortTuningHz: tweeterPortTuningHz,
+            wooferPortDiameterCentimeters: wooferPortDiameterCentimeters,
+            tweeterPortDiameterCentimeters: tweeterPortDiameterCentimeters,
+            wooferBaffleWidthMeters: wooferBaffleWidthMeters,
+            tweeterBaffleWidthMeters: tweeterBaffleWidthMeters,
+            crossoverAlignment: crossoverAlignment,
+            crossoverOrder: crossoverOrder,
+            symbols: schematic.symbols,
+            wires: schematic.wires
+        )
+    }
+
+    private func forwardSchematicChanges() {
+        schematicSubscription = schematic.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     var settingsValidationMessage: String? {
         guard targetFrequencyHz.isFinite, targetFrequencyHz > 0 else {

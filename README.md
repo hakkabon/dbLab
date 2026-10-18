@@ -71,6 +71,8 @@ The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON
 
 The acoustic model is an initial Thiele/Small low-frequency approximation, not a measurement-matched prediction. It assumes the entered driver sensitivity is flat outside the modeled enclosure behavior, idealized electrical crossover filters, equal acoustic-center timing, and no room effects, diffraction, port losses, cone breakup, or excursion limiting. Port length uses a conventional Helmholtz estimate with a simple end correction. For a 12 dB/octave Linkwitz–Riley alignment, the tweeter branch is polarity-inverted. The response plot does not yet solve the custom LCR schematic against a driver's complex impedance; Bessel crossovers and automatic passive-component synthesis are also not yet available.
 
+Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, driver IDs, and schematic symbols and wires.
+
 ## Requirements
 - macOS 14+
 - iPadOS 17+

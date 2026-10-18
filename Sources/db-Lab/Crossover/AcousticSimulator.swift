@@ -1,6 +1,6 @@
 import Foundation
 
-enum EnclosureType: String, CaseIterable, Identifiable {
+enum EnclosureType: String, CaseIterable, Identifiable, Codable {
     case openBaffle = "Open baffle"
     case closedBox = "Closed box"
     case portedBox = "Ported box"
@@ -8,7 +8,7 @@ enum EnclosureType: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum CrossoverAlignment: String, CaseIterable, Identifiable, Equatable {
+enum CrossoverAlignment: String, CaseIterable, Identifiable, Equatable, Codable {
     case butterworth = "Butterworth"
     case linkwitzRiley = "Linkwitz–Riley"
 
@@ -235,9 +235,9 @@ enum AcousticSimulator {
         }
         if alignment == .linkwitzRiley {
             transfer = transfer * transfer
-            if order == 2, band == .highPass {
-                transfer = transfer * -1
-            }
+        }
+        if band == .highPass, order.isMultiple(of: 2), order % 4 != 0 {
+            transfer = transfer * -1
         }
         return transfer
     }
