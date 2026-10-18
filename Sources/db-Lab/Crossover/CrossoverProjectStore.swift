@@ -18,6 +18,16 @@ struct CrossoverProjectSnapshot: Codable, Identifiable {
     var tweeterBaffleWidthMeters: Double
     var crossoverAlignment: CrossoverAlignment
     var crossoverOrder: Int
+    var inputNetID: Int?
+    var wooferOutputNetID: Int?
+    var tweeterOutputNetID: Int?
+    var inputNetReference: PinRef? = nil
+    var wooferOutputNetReference: PinRef? = nil
+    var tweeterOutputNetReference: PinRef? = nil
+    var wooferFrequencyResponseID: UUID?
+    var tweeterFrequencyResponseID: UUID?
+    var wooferImpedanceID: UUID?
+    var tweeterImpedanceID: UUID?
     var symbols: [SymbolInstance]
     var wires: [WireSegment]
 }

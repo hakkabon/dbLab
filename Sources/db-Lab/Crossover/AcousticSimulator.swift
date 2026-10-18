@@ -154,12 +154,9 @@ enum AcousticSimulator {
         throw AcousticSimulationError.invalidSettings("\(branch.driver.displayName): \(message)")
     }
 
-    private static func branchResponse(
+    static func modeledAcousticResponse(
         _ branch: AcousticBranchSettings,
-        frequencyHz: Double,
-        crossoverFrequencyHz: Double,
-        alignment: CrossoverAlignment,
-        order: Int
+        frequencyHz: Double
     ) -> ComplexValue {
         let driver = branch.driver
         let s = ComplexValue(real: 0, imaginary: frequencyHz / driver.fsHz)
@@ -194,7 +191,16 @@ enum AcousticSimulator {
             )
             enclosure = s4 / denominator
         }
+        return enclosure * pow(10, driver.sensitivityDb / 20)
+    }
 
+    private static func branchResponse(
+        _ branch: AcousticBranchSettings,
+        frequencyHz: Double,
+        crossoverFrequencyHz: Double,
+        alignment: CrossoverAlignment,
+        order: Int
+    ) -> ComplexValue {
         let normalizedFrequency = frequencyHz / crossoverFrequencyHz
         let filter = crossoverTransfer(
             normalizedFrequency,
@@ -202,8 +208,7 @@ enum AcousticSimulator {
             alignment: alignment,
             order: order
         )
-        let sensitivity = pow(10, driver.sensitivityDb / 20)
-        return enclosure * filter * sensitivity
+        return modeledAcousticResponse(branch, frequencyHz: frequencyHz) * filter
     }
 
     private static func crossoverTransfer(
@@ -254,11 +259,18 @@ enum AcousticSimulator {
     }
 }
 
-private struct ComplexValue {
+struct ComplexValue {
     var real: Double
     var imaginary: Double
 
     var magnitude: Double { hypot(real, imaginary) }
+
+    static func polar(magnitude: Double, phaseRadians: Double) -> Self {
+        Self(
+            real: magnitude * cos(phaseRadians),
+            imaginary: magnitude * sin(phaseRadians)
+        )
+    }
 
     static func + (lhs: Self, rhs: Self) -> Self {
         Self(real: lhs.real + rhs.real, imaginary: lhs.imaginary + rhs.imaginary)
@@ -281,7 +293,6 @@ private struct ComplexValue {
 
     static func / (lhs: Self, rhs: Self) -> Self {
         let denominator = rhs.real * rhs.real + rhs.imaginary * rhs.imaginary
-        guard denominator > 0 else { return Self(real: 0, imaginary: 0) }
         return Self(
             real: (lhs.real * rhs.real + lhs.imaginary * rhs.imaginary) / denominator,
             imaginary: (lhs.imaginary * rhs.real - lhs.real * rhs.imaginary) / denominator

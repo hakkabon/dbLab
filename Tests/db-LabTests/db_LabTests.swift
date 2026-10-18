@@ -143,6 +143,184 @@ import Testing
     #expect(document.settingsValidationMessage == "Target crossover frequency must be a positive finite value.")
 }
 
+@Test @MainActor func crossoverNetworkSimulatesLoadedResistiveBranchesAndAcousticSummation() throws {
+    let topology = crossoverTestTopology()
+    var driver = sampleSpeakerDriver()
+    driver.reOhms = 8
+    driver.leMilliHenries = 0
+    let wooferFRD = flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+    let tweeterFRD = flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+
+    let result = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: wooferFRD,
+        tweeterFrequencyResponse: tweeterFRD
+    )
+
+    let point = try #require(result.response.first)
+    #expect(abs(point.wooferDb - 80 + 20 * log10(2)) < 0.01)
+    #expect(abs(point.tweeterDb - 80 + 20 * log10(2)) < 0.01)
+    #expect(abs(point.totalDb - 80) < 0.01)
+}
+
+@Test @MainActor func crossoverNetworkUsesMeasuredComplexImpedanceForDriverLoading() throws {
+    let topology = crossoverTestTopology()
+    var driver = sampleSpeakerDriver()
+    driver.reOhms = 8
+    driver.leMilliHenries = 0
+    let wooferFRD = flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+    let tweeterFRD = flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+
+    let nominal = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: wooferFRD,
+        tweeterFrequencyResponse: tweeterFRD
+    )
+    let higherImpedance = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: wooferFRD,
+        tweeterFrequencyResponse: tweeterFRD,
+        wooferImpedance: impedanceMeasurement(magnitude: 16),
+        tweeterImpedance: impedanceMeasurement(magnitude: 16)
+    )
+
+    let nominalLevel = try #require(nominal.response.first).wooferDb
+    let loadedLevel = try #require(higherImpedance.response.first).wooferDb
+    #expect(abs(loadedLevel - nominalLevel - 20 * log10(4 / 3)) < 0.01)
+}
+
+@Test @MainActor func crossoverNetworkIncludesMeasuredAcousticPhaseInSummation() throws {
+    let topology = crossoverTestTopology()
+    var driver = sampleSpeakerDriver()
+    driver.reOhms = 8
+    driver.leMilliHenries = 0
+    let result = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0),
+        tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 180)
+    )
+
+    let point = try #require(result.response.first)
+    #expect(abs(point.wooferDb - point.tweeterDb) < 0.01)
+    #expect(point.totalDb < 10)
+}
+
+@Test @MainActor func crossoverNetworkSolvesReactiveCapacitorBranch() throws {
+    let schematic = SchematicDocument()
+    let wooferResistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(0, 0),
+        parameters: ["resistance": 8]
+    )
+    let tweeterResistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R2",
+        position: GridPoint(0, 10),
+        parameters: ["resistance": 8]
+    )
+    let capacitor = SymbolInstance(
+        descriptorId: "capacitor",
+        refDes: "C1",
+        position: GridPoint(2, 2),
+        rotation: 90,
+        parameters: ["capacitance": 100e-6]
+    )
+    let ground = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND1",
+        position: GridPoint(2, 5)
+    )
+    let secondGround = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND2",
+        position: GridPoint(50, 1)
+    )
+    schematic.restore(
+        symbols: [wooferResistor, tweeterResistor, capacitor, ground, secondGround],
+        wires: [
+            WireSegment(points: [GridPoint(-2, 0), GridPoint(-2, 10)]),
+            WireSegment(points: [
+                GridPoint(2, 4),
+                GridPoint(50, 4),
+                GridPoint(50, 0)
+            ])
+        ]
+    )
+    let topology = (
+        schematic: schematic,
+        inputNetID: net(containing: PinRef(symbolId: wooferResistor.id, pinId: "1"), in: schematic.nets)!.id,
+        wooferOutputNetID: net(containing: PinRef(symbolId: wooferResistor.id, pinId: "2"), in: schematic.nets)!.id,
+        tweeterOutputNetID: net(containing: PinRef(symbolId: tweeterResistor.id, pinId: "2"), in: schematic.nets)!.id
+    )
+    var driver = sampleSpeakerDriver()
+    driver.reOhms = 8
+    driver.leMilliHenries = 0
+
+    let result = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0),
+        tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+    )
+
+    let lowFrequency = try #require(result.response.first)
+    let highFrequency = try #require(result.response.last)
+    #expect(lowFrequency.wooferDb > highFrequency.wooferDb + 10)
+}
+
+@Test @MainActor func crossoverNetworkRejectsFloatingPassiveSubcircuits() {
+    let topology = crossoverTestTopology()
+    _ = topology.schematic.addComponent(descriptorId: "resistor", at: GridPoint(100, 100))
+    let driver = sampleSpeakerDriver()
+
+    do {
+        _ = try simulateCrossover(
+            topology,
+            woofer: driver,
+            tweeter: driver,
+            wooferFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0),
+            tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+        )
+        Issue.record("A floating component island must not produce a successful simulation.")
+    } catch CrossoverNetworkSimulationError.singularNetwork {
+    } catch {
+        Issue.record("Unexpected solver error: \(error.localizedDescription)")
+    }
+}
+
+@Test @MainActor func crossoverProjectNodeAssignmentsRemainAttachedToPinsAfterNetChanges() throws {
+    let topology = crossoverTestTopology()
+    let document = CrossoverDocument()
+    document.schematic.restore(symbols: topology.schematic.symbols, wires: topology.schematic.wires)
+    document.inputNetID = topology.inputNetID
+    let originalNetPins = try #require(document.schematic.nets.first { $0.id == document.inputNetID })
+        .connectedPins
+
+    var earlierNet = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "A1",
+        position: GridPoint(-100, -100)
+    )
+    earlierNet.parameters["resistance"] = 8
+    document.schematic.addSymbol(earlierNet)
+    let encodedSnapshot = try JSONEncoder().encode(document.snapshot)
+    let decodedSnapshot = try JSONDecoder().decode(CrossoverProjectSnapshot.self, from: encodedSnapshot)
+    let restored = CrossoverDocument(snapshot: decodedSnapshot)
+    let restoredInput = try #require(restored.schematic.nets.first { $0.id == restored.inputNetID })
+
+    #expect(restoredInput.connectedPins.contains { originalNetPins.contains($0) })
+}
+
 @Test func crossoverPaletteContainsOnlyPassiveComponents() {
     let symbols = Set(ComponentRegistry.shared.passiveDescriptors.map(\.symbol))
 
@@ -629,6 +807,116 @@ private func sampleSpeakerDriver(id: UUID = UUID()) -> SpeakerDriver {
         sdSquareCentimeters: 220,
         xmaxMillimeters: 8,
         sensitivityDb: 89
+    )
+}
+
+@MainActor
+private func crossoverTestTopology() -> (
+    schematic: SchematicDocument,
+    inputNetID: Int,
+    wooferOutputNetID: Int,
+    tweeterOutputNetID: Int
+) {
+    let schematic = SchematicDocument()
+    let wooferResistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(0, 0),
+        parameters: ["resistance": 8]
+    )
+    let tweeterResistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R2",
+        position: GridPoint(0, 10),
+        parameters: ["resistance": 8]
+    )
+    let ground = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND1",
+        position: GridPoint(10, 1)
+    )
+    schematic.restore(
+        symbols: [wooferResistor, tweeterResistor, ground],
+        wires: [WireSegment(points: [GridPoint(-2, 0), GridPoint(-2, 10)])]
+    )
+    return (
+        schematic,
+        net(containing: PinRef(symbolId: wooferResistor.id, pinId: "1"), in: schematic.nets)!.id,
+        net(containing: PinRef(symbolId: wooferResistor.id, pinId: "2"), in: schematic.nets)!.id,
+        net(containing: PinRef(symbolId: tweeterResistor.id, pinId: "2"), in: schematic.nets)!.id
+    )
+}
+
+@MainActor
+private func simulateCrossover(
+    _ topology: (
+        schematic: SchematicDocument,
+        inputNetID: Int,
+        wooferOutputNetID: Int,
+        tweeterOutputNetID: Int
+    ),
+    woofer: SpeakerDriver,
+    tweeter: SpeakerDriver,
+    wooferFrequencyResponse: DriverMeasurement?,
+    tweeterFrequencyResponse: DriverMeasurement?,
+    wooferImpedance: DriverMeasurement? = nil,
+    tweeterImpedance: DriverMeasurement? = nil
+) throws -> CrossoverSimulationResult {
+    try CrossoverNetworkSimulator.simulate(
+        schematic: topology.schematic,
+        inputNetID: topology.inputNetID,
+        wooferOutputNetID: topology.wooferOutputNetID,
+        tweeterOutputNetID: topology.tweeterOutputNetID,
+        woofer: AcousticBranchSettings(
+            driver: woofer,
+            enclosure: .closedBox,
+            boxVolumeLiters: 30,
+            portTuningHz: 40,
+            portDiameterCentimeters: 7,
+            baffleWidthMeters: 0.3,
+            band: .lowPass
+        ),
+        tweeter: AcousticBranchSettings(
+            driver: tweeter,
+            enclosure: .closedBox,
+            boxVolumeLiters: 5,
+            portTuningHz: 100,
+            portDiameterCentimeters: 3,
+            baffleWidthMeters: 0.2,
+            band: .highPass
+        ),
+        wooferFrequencyResponse: wooferFrequencyResponse,
+        tweeterFrequencyResponse: tweeterFrequencyResponse,
+        wooferImpedance: wooferImpedance,
+        tweeterImpedance: tweeterImpedance
+    )
+}
+
+private func flatResponseMeasurement(levelDb: Double, phaseDegrees: Double) -> DriverMeasurement {
+    DriverMeasurement(
+        kind: .frequencyResponse,
+        sourceFileName: "flat.frd",
+        sourceReference: "Test response",
+        importedAt: Date(timeIntervalSince1970: 0),
+        hasPhaseData: true,
+        points: [
+            DriverMeasurementPoint(frequencyHz: 20, magnitude: levelDb, phaseDegrees: phaseDegrees),
+            DriverMeasurementPoint(frequencyHz: 20_000, magnitude: levelDb, phaseDegrees: phaseDegrees)
+        ]
+    )
+}
+
+private func impedanceMeasurement(magnitude: Double) -> DriverMeasurement {
+    DriverMeasurement(
+        kind: .impedance,
+        sourceFileName: "load.zma",
+        sourceReference: "Test impedance",
+        importedAt: Date(timeIntervalSince1970: 0),
+        hasPhaseData: true,
+        points: [
+            DriverMeasurementPoint(frequencyHz: 20, magnitude: magnitude, phaseDegrees: 0),
+            DriverMeasurementPoint(frequencyHz: 20_000, magnitude: magnitude, phaseDegrees: 0)
+        ]
     )
 }
 

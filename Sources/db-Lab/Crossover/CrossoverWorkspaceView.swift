@@ -24,6 +24,8 @@ struct CrossoverWorkspaceView: View {
                     driverBranch(
                         title: "Woofer",
                         driverID: $document.wooferDriverID,
+                        frequencyResponseID: $document.wooferFrequencyResponseID,
+                        impedanceID: $document.wooferImpedanceID,
                         enclosure: $document.wooferEnclosure,
                         volume: $document.wooferBoxVolumeLiters,
                         tuning: $document.wooferPortTuningHz,
@@ -34,6 +36,8 @@ struct CrossoverWorkspaceView: View {
                     driverBranch(
                         title: "Tweeter",
                         driverID: $document.tweeterDriverID,
+                        frequencyResponseID: $document.tweeterFrequencyResponseID,
+                        impedanceID: $document.tweeterImpedanceID,
                         enclosure: $document.tweeterEnclosure,
                         volume: $document.tweeterBoxVolumeLiters,
                         tuning: $document.tweeterPortTuningHz,
@@ -43,6 +47,18 @@ struct CrossoverWorkspaceView: View {
                     )
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Custom passive LCR crossover")
+                        .font(.title2.weight(.semibold))
+                    Text("The passive LCR network below is solved against the selected driver impedances. Connect the source and output nets to ground through the crossover as appropriate.")
+                        .foregroundStyle(.secondary)
+                    SchematicEditorView(document: document.schematic)
+                        .frame(minHeight: 420)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+
+                networkAssignments
+
                 HStack {
                     Button {
                         document.simulate(using: driverLibrary)
@@ -50,7 +66,7 @@ struct CrossoverWorkspaceView: View {
                         if document.isSimulating {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Simulate acoustic response", systemImage: "waveform.path")
+                            Label("Simulate electrical + acoustic response", systemImage: "waveform.path")
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -66,54 +82,32 @@ struct CrossoverWorkspaceView: View {
                 if let error = document.simulationError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+                ForEach(document.simulationWarnings, id: \.self) { warning in
+                    Label(warning, systemImage: "info.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
 
                 if !document.acousticResponse.isEmpty {
                     responsePlot
                 }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Custom passive LCR crossover")
-                        .font(.title2.weight(.semibold))
-                    Text("The schematic is an editable design drawing. This initial acoustic simulation uses ideal Butterworth or Linkwitz–Riley electrical slopes and does not yet solve this LCR network against the drivers' impedance.")
-                        .foregroundStyle(.secondary)
-                    SchematicEditorView(document: document.schematic)
-                        .frame(minHeight: 420)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
             }
             .padding(24)
         }
         .navigationTitle(document.name)
-        .onChange(of: document.crossoverAlignment) { _, alignment in
-            if alignment == .linkwitzRiley && document.crossoverOrder != 2 && document.crossoverOrder != 4 {
-                document.crossoverOrder = 4
-            }
-        }
     }
 
     private var crossoverSettings: some View {
         GroupBox {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 14) {
-                numericSetting("Crossover frequency", unit: "Hz", value: $document.targetFrequencyHz)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Ideal filter alignment").font(.caption).foregroundStyle(.secondary)
-                    Picker("Filter alignment", selection: $document.crossoverAlignment) {
-                        ForEach(CrossoverAlignment.allCases) { alignment in
-                            Text(alignment.rawValue).tag(alignment)
-                        }
-                    }
-                    .labelsHidden()
+            VStack(alignment: .leading, spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 14) {
+                    numericSetting("Target crossover frequency (reference)", unit: "Hz", value: $document.targetFrequencyHz)
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Filter order").font(.caption).foregroundStyle(.secondary)
-                    Picker("Filter order", selection: $document.crossoverOrder) {
-                        ForEach(document.crossoverAlignment == .linkwitzRiley ? [2, 4] : [1, 2, 3, 4], id: \.self) { order in
-                            Text("\(order * 6) dB/octave").tag(order)
-                        }
-                    }
-                    .labelsHidden()
-                }
+                Text("Reference only; the schematic components determine the simulated crossover.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
         } label: {
@@ -125,6 +119,8 @@ struct CrossoverWorkspaceView: View {
     private func driverBranch(
         title: String,
         driverID: Binding<UUID?>,
+        frequencyResponseID: Binding<UUID?>,
+        impedanceID: Binding<UUID?>,
         enclosure: Binding<EnclosureType>,
         volume: Binding<Double>,
         tuning: Binding<Double>,
@@ -140,6 +136,10 @@ struct CrossoverWorkspaceView: View {
                         Text(driver.displayName).tag(Optional(driver.id))
                     }
                 }
+                .onChange(of: driverID.wrappedValue) { _, _ in
+                    frequencyResponseID.wrappedValue = nil
+                    impedanceID.wrappedValue = nil
+                }
 
                 if let id = driverID.wrappedValue,
                    let driver = driverLibrary.drivers.first(where: { $0.id == id }) {
@@ -148,41 +148,62 @@ struct CrossoverWorkspaceView: View {
                          + "  ·  \(driver.sensitivityDb.formatted(.number.precision(.fractionLength(1)))) dB")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    measurementPicker(
+                        title: "Measured frequency response",
+                        kind: .frequencyResponse,
+                        measurements: driver.measurements,
+                        selection: frequencyResponseID
+                    )
+                    measurementPicker(
+                        title: "Measured impedance",
+                        kind: .impedance,
+                        measurements: driver.measurements,
+                        selection: impedanceID
+                    )
+                    if frequencyResponseID.wrappedValue != nil {
+                        Text("Measured response is treated as the complete acoustic response at 2.83 V / 1 m; enclosure fields are not applied to this branch.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Text("Add or import driver data in Speaker Drivers.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Picker("\(title) enclosure", selection: enclosure) {
-                    ForEach(EnclosureType.allCases) { type in
-                        Text(type.rawValue).tag(type)
+                Group {
+                    Picker("\(title) enclosure", selection: enclosure) {
+                        ForEach(EnclosureType.allCases) { type in
+                            Text(type.rawValue).tag(type)
+                        }
                     }
-                }
 
-                switch enclosure.wrappedValue {
-                case .openBaffle:
-                    numericSetting("Baffle width", unit: "m", value: baffleWidth)
-                case .closedBox:
-                    numericSetting("Net box volume", unit: "L", value: volume)
-                case .portedBox:
-                    numericSetting("Net box volume", unit: "L", value: volume)
-                    numericSetting("Port tuning", unit: "Hz", value: tuning)
-                    numericSetting("Port diameter", unit: "cm", value: portDiameter)
-                    if let length = PortedBoxDesign.portLengthCentimeters(
-                        volumeLiters: volume.wrappedValue,
-                        tuningHz: tuning.wrappedValue,
-                        diameterCentimeters: portDiameter.wrappedValue
-                    ) {
-                        Text("Approx. port length: \(length.formatted(.number.precision(.fractionLength(1)))) cm")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("These values do not produce a practical positive port length.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                    switch enclosure.wrappedValue {
+                    case .openBaffle:
+                        numericSetting("Baffle width", unit: "m", value: baffleWidth)
+                    case .closedBox:
+                        numericSetting("Net box volume", unit: "L", value: volume)
+                    case .portedBox:
+                        numericSetting("Net box volume", unit: "L", value: volume)
+                        numericSetting("Port tuning", unit: "Hz", value: tuning)
+                        numericSetting("Port diameter", unit: "cm", value: portDiameter)
+                        if let length = PortedBoxDesign.portLengthCentimeters(
+                            volumeLiters: volume.wrappedValue,
+                            tuningHz: tuning.wrappedValue,
+                            diameterCentimeters: portDiameter.wrappedValue
+                        ) {
+                            Text("Approx. port length: \(length.formatted(.number.precision(.fractionLength(1)))) cm")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("These values do not produce a practical positive port length.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
+                .disabled(frequencyResponseID.wrappedValue != nil)
 
                 Text(band == .lowPass ? "Low-pass branch" : "High-pass branch")
                     .font(.caption)
@@ -194,17 +215,84 @@ struct CrossoverWorkspaceView: View {
         }
     }
 
+    private var networkAssignments: some View {
+        GroupBox {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), alignment: .leading)], alignment: .leading, spacing: 14) {
+                nodePicker("Input net", selection: binding(for: \.inputNetID))
+                nodePicker("Woofer output net", selection: binding(for: \.wooferOutputNetID))
+                nodePicker("Tweeter output net", selection: binding(for: \.tweeterOutputNetID))
+            }
+            .padding(.vertical, 4)
+        } label: {
+            Label("Electrical network node assignments", systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.headline)
+        }
+    }
+
+    private var availableOutputNets: [Net] {
+        document.schematic.nets.filter { !$0.isGround }
+    }
+
+    private func binding(for keyPath: ReferenceWritableKeyPath<CrossoverDocument, Int?>) -> Binding<Int?> {
+        Binding(
+            get: { document[keyPath: keyPath] },
+            set: { document[keyPath: keyPath] = $0 }
+        )
+    }
+
+    private func nodePicker(_ title: String, selection: Binding<Int?>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                Text("Select net").tag(Int?.none)
+                ForEach(availableOutputNets) { net in
+                    Text(netLabel(net)).tag(Optional(net.id))
+                }
+            }
+            .labelsHidden()
+            if availableOutputNets.isEmpty {
+                Text("Place and wire components to create nets.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func netLabel(_ net: Net) -> String {
+        let symbolsByID = Dictionary(uniqueKeysWithValues: document.schematic.symbols.map { ($0.id, $0) })
+        let pinNames = net.connectedPins.compactMap { pin -> String? in
+            guard let symbol = symbolsByID[pin.symbolId] else { return nil }
+            return "\(symbol.refDes).\(pin.pinId)"
+        }
+        let pins = pinNames.isEmpty ? "unconnected" : pinNames.joined(separator: ", ")
+        return "\(net.name) (\(pins))"
+    }
+
+    private func measurementPicker(
+        title: String,
+        kind: DriverMeasurementKind,
+        measurements: [DriverMeasurement],
+        selection: Binding<UUID?>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                Text("Use estimated model").tag(UUID?.none)
+                ForEach(measurements.filter { $0.kind == kind }) { measurement in
+                    Text("\(measurement.sourceFileName) · \(measurement.points.count) pts")
+                        .tag(Optional(measurement.id))
+                }
+            }
+            .labelsHidden()
+        }
+    }
+
     private var responsePlot: some View {
-        GroupBox("Estimated on-axis SPL") {
+        GroupBox("System SPL response") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("At 2.83 V / 1 m reference, summing the selected woofer and tweeter branches.")
+                Text("The input source is 2.83 V RMS. Driver terminal voltages come from the passive network solution.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if document.crossoverAlignment == .linkwitzRiley && document.crossoverOrder == 2 {
-                    Text("For a 12 dB/octave Linkwitz–Riley crossover, reverse the tweeter polarity.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Chart {
                     ForEach(document.acousticResponse) { point in
                         LineMark(

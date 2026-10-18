@@ -16,7 +16,7 @@ public struct GridPoint: Hashable, Codable {
     }
 }
 
-public struct PinRef: Hashable {
+public struct PinRef: Hashable, Codable {
     public let symbolId: UUID
     public let pinId: String
 }

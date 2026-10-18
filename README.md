@@ -28,7 +28,8 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   **Passive-only component palette:** Design custom networks using resistors, capacitors, inductors, and inductors with series resistance.
 *   **Speaker driver library:** Create, edit, delete, import, and export driver records, including Thiele/Small values and a source reference.
 *   **Enclosure response estimates:** Compare open-baffle, sealed, and ported low-frequency alignments using each driver's parameters.
-*   **Two-way acoustic response:** Plot woofer, tweeter, and combined SPL with idealized Butterworth or Linkwitz–Riley crossover slopes.
+*   **Two-way acoustic response:** Solve the passive LCR schematic using driver impedance and combine electrical branch voltages with measured or modeled acoustic response.
+*   **Measured driver data:** Import FRD frequency response and ZMA impedance files, retain provenance, and select datasets per driver in a crossover project.
 *   **Schematic Editor:** Place and rotate LCR components, edit their values, and draw orthogonal wires.
 *   **Connectivity model:** Derive electrical nets from component pins and wires.
 
@@ -67,13 +68,16 @@ The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON
 
 ### Speaker System
 1. Create a crossover project and select a woofer and tweeter from the library.
-2. Choose each driver's open-baffle, closed-box, or ported-box alignment and enter the required dimensions. For a ported box, enter diameter and tuning; the app estimates port length.
-3. Set the crossover frequency and idealized Butterworth (6–24 dB/octave) or Linkwitz–Riley (12 or 24 dB/octave) alignment, then choose **Simulate acoustic response**.
-4. Review the individual branch and combined estimated SPL curves. Design the passive LCR network separately in the schematic.
+2. Select each driver's measured FRD/ZMA datasets, or leave the selectors on the estimated/modelled options. A measured FRD is used as the complete acoustic response for that driver; the enclosure model is used when no FRD is selected.
+3. Choose an enclosure and enter its dimensions for branches using the modeled response. For a ported box, enter diameter and tuning; the app estimates port length.
+4. Build the passive network in the schematic. Select the source input net and each driver's output net below the schematic. Place a ground symbol on the common return; the simulator treats each driver as a load from its selected output to ground.
+5. Choose **Simulate electrical + acoustic response**. The simulator applies a 2.83 V RMS AC source to the input net, solves the passive network over frequency, and plots woofer, tweeter, and coherently summed response.
 
-The acoustic model is an initial Thiele/Small low-frequency approximation, not a measurement-matched prediction. Imported FRD/ZMA datasets are stored with the driver but are not yet used by the response solver. The current model assumes the entered driver sensitivity is flat outside the modeled enclosure behavior, idealized electrical crossover filters, equal acoustic-center timing, and no room effects, diffraction, port losses, cone breakup, or excursion limiting. Port length uses a conventional Helmholtz estimate with a simple end correction. For a 12 dB/octave Linkwitz–Riley alignment, the tweeter branch is polarity-inverted. The response plot does not yet solve the custom LCR schematic against a driver's complex impedance; Bessel crossovers and automatic passive-component synthesis are also not yet available.
+The network solver supports passive resistors, capacitors, inductors, and inductors with series resistance, using complex nodal analysis and the selected drivers as loads. Selected ZMA data supplies the complex load; otherwise the solver approximates it as `Re + jωLe`. Selected FRD data supplies SPL magnitude and phase; absent FRD, the simulator uses the initial Thiele/Small low-frequency enclosure approximation. Phase-less measurements are treated as zero phase and identified in simulation warnings. Measured data limits the plotted sweep to the common frequency range covered by all selected datasets.
 
-Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, driver IDs, and schematic symbols and wires.
+This remains a first-pass on-axis estimate, not a measurement-matched full loudspeaker simulation. The virtual source is ideal (no source/output resistance); measured FRD is assumed to represent the complete driver response at 2.83 V / 1 m; the enclosure approximation does not add to measured FRD. Acoustic-center offsets, baffle diffraction, room effects, port losses, cone breakup, power compression, and excursion limits are not modeled. Port length uses a conventional Helmholtz estimate with a simple end correction. The reference crossover frequency is a design note and does not alter the solved network; Bessel filter synthesis and automatic component selection are not implemented.
+
+Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, driver IDs, measurement selections, stable schematic pin references for node assignments, and schematic symbols and wires.
 
 ## Requirements
 - macOS 14+
