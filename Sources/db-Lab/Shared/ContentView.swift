@@ -20,12 +20,14 @@ struct ContentView: View {
     @ViewBuilder
     private var detailView: some View {
         switch appState.selectedSidebarItem {
-        case .circuit(let id):
-            if let doc = appState.circuitDocument(id: id) {
-                CircuitSimulatorView(document: doc)
+        case .crossover(let id):
+            if let document = appState.crossoverDocument(id: id) {
+                CrossoverWorkspaceView(document: document, driverLibrary: appState.driverLibrary)
             } else {
                 WelcomeView()
             }
+        case .driverLibrary:
+            DriverLibraryView(library: appState.driverLibrary)
         case nil:
             WelcomeView()
         }
@@ -39,12 +41,15 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $appState.selectedSidebarItem) {
-            // ── Circuit simulations ──
-            if !appState.circuitDocuments.isEmpty {
-                Section("Circuits") {
-                    ForEach(appState.circuitDocuments) { doc in
-                        Label(doc.name, systemImage: "cpu")
-                            .tag(SidebarItem.circuit(doc.id))
+            Section("Library") {
+                Label("Speaker Drivers", systemImage: "speaker")
+                    .tag(SidebarItem.driverLibrary)
+            }
+            if !appState.crossoverDocuments.isEmpty {
+                Section("Crossovers") {
+                    ForEach(appState.crossoverDocuments) { document in
+                        CrossoverSidebarRow(document: document)
+                            .tag(SidebarItem.crossover(document.id))
                     }
                 }
             }
@@ -54,12 +59,20 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItemGroup {
                 Menu {
-                    Button("Circuit", action: appState.newCircuit)
+                    Button("Crossover", action: appState.newCrossover)
                 } label: {
                     Label("New", systemImage: "plus")
                 }
             }
         }
+    }
+}
+
+private struct CrossoverSidebarRow: View {
+    @ObservedObject var document: CrossoverDocument
+
+    var body: some View {
+        Label(document.name, systemImage: "speaker.wave.2")
     }
 }
 
@@ -70,7 +83,7 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 32) {
-            Image(systemName: "cpu")
+            Image(systemName: "speaker.wave.2")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
@@ -80,15 +93,15 @@ struct WelcomeView: View {
                 .font(.largeTitle)
                 .bold()
 
-            Text("Electronic Circuit Simulator")
+            Text("Passive Loudspeaker Crossover Designer")
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
             WelcomeActionCard(
-                title: "Circuit Simulator",
-                subtitle: "Design circuits and run SPICE analyses",
-                icon: "cpu",
-                action: appState.newCircuit
+                title: "New Crossover",
+                subtitle: "Set crossover targets and design a passive LCR network",
+                icon: "speaker.wave.2",
+                action: appState.newCrossover
             )
         }
         .padding(48)

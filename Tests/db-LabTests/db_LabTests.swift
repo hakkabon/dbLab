@@ -131,6 +131,183 @@ import Testing
     #expect(document.addComponent(descriptorId: "resistor", at: GridPoint(15, 0))?.refDes == "R2")
 }
 
+@Test @MainActor func crossoverProjectStartsWithTwoWayDesignTargets() {
+    let document = CrossoverDocument()
+
+    #expect(document.name == "Untitled Crossover")
+    #expect(document.targetFrequencyHz == 2_500)
+    #expect(document.schematic.symbols.isEmpty)
+    #expect(document.settingsValidationMessage == nil)
+
+    document.targetFrequencyHz = 0
+    #expect(document.settingsValidationMessage == "Target crossover frequency must be a positive finite value.")
+}
+
+@Test func crossoverPaletteContainsOnlyPassiveComponents() {
+    let symbols = Set(ComponentRegistry.shared.passiveDescriptors.map(\.symbol))
+
+    #expect(symbols == Set([.resistor, .capacitor, .inductor, .inductorSeries]))
+}
+
+@Test @MainActor func appStateCreatesAndSelectsCrossoverProjects() {
+    let appState = AppState()
+    appState.newCrossover()
+
+    #expect(appState.crossoverDocuments.count == 1)
+    #expect(appState.selectedSidebarItem == .crossover(appState.crossoverDocuments[0].id))
+}
+
+@Test @MainActor func driverLibraryPersistsImportsExportsAndDeletesDrivers() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let libraryURL = directory.appendingPathComponent("drivers.json")
+    let driver = sampleSpeakerDriver()
+
+    let library = DriverLibrary(fileURL: libraryURL)
+    try library.save(driver)
+    #expect(library.drivers == [driver])
+
+    let restored = DriverLibrary(fileURL: libraryURL)
+    #expect(restored.drivers == [driver])
+
+    let imported = DriverLibrary(fileURL: directory.appendingPathComponent("imported.json"))
+    try imported.importJSON(try library.exportJSON())
+    #expect(imported.drivers == [driver])
+    try imported.delete(driver)
+    #expect(imported.drivers.isEmpty)
+}
+
+@Test func driverDataRequiresSourceAndValidThieleSmallValues() {
+    var driver = sampleSpeakerDriver()
+    #expect(driver.validationMessage == nil)
+    #expect(driver.qts > 0)
+
+    driver.source = " "
+    #expect(driver.validationMessage == "Record the manufacturer's datasheet or other data source.")
+    driver.source = "Manufacturer datasheet"
+    driver.fsHz = .infinity
+    #expect(driver.validationMessage != nil)
+}
+
+@Test func acousticSimulationProducesFiniteResponsesForAllEnclosures() throws {
+    let driver = sampleSpeakerDriver()
+    for enclosure in EnclosureType.allCases {
+        let settings = AcousticBranchSettings(
+            driver: driver,
+            enclosure: enclosure,
+            boxVolumeLiters: 30,
+            portTuningHz: 40,
+            portDiameterCentimeters: 7,
+            baffleWidthMeters: 0.3,
+            band: .lowPass
+        )
+        let points = try AcousticSimulator.simulate(
+            woofer: settings,
+            tweeter: AcousticBranchSettings(
+                driver: driver,
+                enclosure: enclosure,
+                boxVolumeLiters: 30,
+                portTuningHz: 40,
+                portDiameterCentimeters: 7,
+                baffleWidthMeters: 0.3,
+                band: .highPass
+            ),
+            crossoverFrequencyHz: 1_280,
+            alignment: .linkwitzRiley,
+            order: 4
+        )
+
+        #expect(points.count > 200)
+        #expect(points.allSatisfy {
+            $0.frequencyHz.isFinite && $0.wooferDb.isFinite
+                && $0.tweeterDb.isFinite && $0.totalDb.isFinite
+        })
+    }
+}
+
+@Test func secondOrderLinkwitzRileySumsWithCorrectHighPassPolarity() throws {
+    let driver = sampleSpeakerDriver()
+    let branch = AcousticBranchSettings(
+        driver: driver,
+        enclosure: .closedBox,
+        boxVolumeLiters: 30,
+        portTuningHz: 40,
+        portDiameterCentimeters: 7,
+        baffleWidthMeters: 0.3,
+        band: .lowPass
+    )
+    let tweeter = AcousticBranchSettings(
+        driver: driver,
+        enclosure: .closedBox,
+        boxVolumeLiters: 30,
+        portTuningHz: 40,
+        portDiameterCentimeters: 7,
+        baffleWidthMeters: 0.3,
+        band: .highPass
+    )
+    let response = try AcousticSimulator.simulate(
+        woofer: branch,
+        tweeter: tweeter,
+        crossoverFrequencyHz: 1_280,
+        alignment: .linkwitzRiley,
+        order: 2
+    )
+    let atCrossover = try #require(response.first { abs($0.frequencyHz - 1_280) < 0.001 })
+
+    #expect(abs((atCrossover.totalDb - atCrossover.wooferDb) - 6.0206) < 0.01)
+}
+
+@Test func portedBoxDesignCalculatesPracticalPortLength() {
+    let length = PortedBoxDesign.portLengthCentimeters(
+        volumeLiters: 30,
+        tuningHz: 40,
+        diameterCentimeters: 7
+    )
+
+    #expect(length != nil)
+    if let length {
+        #expect(length > 0)
+    }
+    #expect(PortedBoxDesign.portLengthCentimeters(
+        volumeLiters: 1,
+        tuningHz: 2_000,
+        diameterCentimeters: 20
+    ) == nil)
+}
+
+@Test func acousticSimulationRejectsUnsupportedLinkwitzRileyOrder() throws {
+    let driver = sampleSpeakerDriver()
+    let low = AcousticBranchSettings(
+        driver: driver,
+        enclosure: .closedBox,
+        boxVolumeLiters: 30,
+        portTuningHz: 40,
+        portDiameterCentimeters: 7,
+        baffleWidthMeters: 0.3,
+        band: .lowPass
+    )
+    let high = AcousticBranchSettings(
+        driver: driver,
+        enclosure: .closedBox,
+        boxVolumeLiters: 5,
+        portTuningHz: 100,
+        portDiameterCentimeters: 3,
+        baffleWidthMeters: 0.2,
+        band: .highPass
+    )
+
+    #expect(throws: AcousticSimulationError.self) {
+        try AcousticSimulator.simulate(
+            woofer: low,
+            tweeter: high,
+            crossoverFrequencyHz: 2_500,
+            alignment: .linkwitzRiley,
+            order: 3
+        )
+    }
+}
+
 @Test @MainActor func schematicNetlistEmitsVoltageSourceAndPassiveComponents() throws {
     let document = SchematicDocument()
     let source = document.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0))!
@@ -252,6 +429,24 @@ import Testing
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {
     nets.first { $0.connectedPins.contains(pin) }
+}
+
+private func sampleSpeakerDriver(id: UUID = UUID()) -> SpeakerDriver {
+    SpeakerDriver(
+        id: id,
+        manufacturer: "Example Audio",
+        model: "EA-200",
+        source: "https://example.invalid/ea-200-datasheet",
+        fsHz: 35,
+        qes: 0.42,
+        qms: 5.2,
+        vasLiters: 45,
+        reOhms: 5.8,
+        leMilliHenries: 0.8,
+        sdSquareCentimeters: 220,
+        xmaxMillimeters: 8,
+        sensitivityDb: 89
+    )
 }
 
 private func netSignature(_ nets: [Net]) -> [String] {

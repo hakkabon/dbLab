@@ -150,6 +150,17 @@ public final class ComponentRegistry: Sendable {
         registry.values.sorted { $0.displayName < $1.displayName }
     }
 
+    public var passiveDescriptors: [ComponentDescriptor] {
+        allDescriptors.filter {
+            switch $0.symbol {
+            case .resistor, .capacitor, .inductor, .inductorSeries:
+                true
+            case .voltageSource, .currentSource, .ground:
+                false
+            }
+        }
+    }
+
     public func descriptor(for id: String) -> ComponentDescriptor? {
         registry[id]
     }

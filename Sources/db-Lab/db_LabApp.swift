@@ -1,7 +1,5 @@
 // db_LabApp.swift
-// db-Lab — SwiftUI frontend for the db-Engine simulation backend.
-//
-// Circuit simulator entry point.
+// db-Lab — passive loudspeaker crossover design app.
 //
 // Entry point: this file contains the @main App struct.
 // Swift requires exactly one file named "main.swift" OR one @main struct
@@ -20,8 +18,8 @@ struct DbLabApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Circuit") {
-                    appState.newCircuit()
+                Button("New Crossover") {
+                    appState.newCrossover()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }

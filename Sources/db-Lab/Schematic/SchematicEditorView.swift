@@ -37,7 +37,7 @@ struct SchematicEditorView: View {
             .tint(activeComponentDescriptorID == nil && !wireToolEnabled ? .accentColor : .secondary)
 
             Menu {
-                ForEach(ComponentRegistry.shared.allDescriptors.filter { $0.symbol != .ground }, id: \.id) { descriptor in
+                ForEach(ComponentRegistry.shared.passiveDescriptors, id: \.id) { descriptor in
                     Button(descriptor.displayName) {
                         activeComponentDescriptorID = descriptor.id
                         wireToolEnabled = false

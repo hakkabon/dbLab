@@ -1,16 +1,15 @@
 # db-Lab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. It combines a native Swift graphical frontend with a platform-agnostic Rust simulation core.
+**db-Lab** is a loudspeaker design application targeting macOS 14+ and iPadOS 17+. It includes a local loudspeaker driver library, two-way system setup, first-pass acoustic response estimates for open-baffle, closed-box, and ported-box enclosures, and a custom schematic editor for passive LCR crossovers.
 
-## Architecture: The Four-Layer Model
+## Architecture
 
-Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `db-Lab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
+The **Schematic is the document**: it contains component placement, wires, connections, and parameters.
 
 ### Layer 1: The Schematic Model (Source of Truth)
-This layer represents the visual document that is saved to disk. It contains all geometric and visual context:
+This layer represents the visual design and its geometric context:
 *   **Symbols:** Component references, grid-aligned positions, rotations, and mirroring.
 *   **Wires:** Orthogonal, grid-aligned point arrays representing physical traces.
-*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g., `VCC`, `IN`).
 *   **Parameters:** Typed SI values stored on each component instance, with engineering-unit labels shown in the editor.
 
 ### Layer 2: The Connectivity Model (The Graph)
@@ -20,38 +19,30 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   **Ground Detection:** Automatically identifies the `Node 0` reference based on Ground symbols.
 *   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
 
-### Layer 3: The Netlist Layer (The Projection)
-This layer acts as an emitter that translates the Connectivity Model into standard SPICE dialects (e.g., ngspice).
-*   **Node Mapping:** Assigns integer node IDs to Nets.
-*   **Value Parsing:** Converts user strings like `4.7k` or `10u` into floating-point values.
-*   **Round-Trip Preservation:** Unknown or vendor-specific SPICE directives are stored as opaque cards and written back verbatim to avoid destroying user data.
-
-### Layer 4: The Simulation Layer (The Engine)
-The actual numerical analysis is handled by **`audio-spice-core`**, a pure-Rust library exposed via UniFFI.
-*   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices for linear AC networks.
-*   **Frequency Sweeps:** Calculates complex node voltages and source currents across logarithmic frequency decades.
-*   **Domain Agnostic:** The Rust core knows nothing about GUI coordinates, symbols, or layout—it only consumes the projected netlist.
-
 ---
 
 ## Key Frontend Features
 
 *   **Custom Native Canvas:** Uses native Core Graphics drawing for the grid, wires, and symbols, with pan and zoom on both macOS and iPadOS.
-*   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
-*   **Schematic Editor:** Place and rotate components, edit their values, draw orthogonal wires, and project connected components to a SPICE netlist.
-*   **Constraints as Diagnostics:** Instead of blocking the user mid-gesture, the Rules Engine runs in the background to detect floating pins, missing grounds, or singular matrices, presenting them as inline diagnostics.
+*   **Crossover projects:** Set a target crossover frequency, select two drivers, and model woofer/tweeter branches.
+*   **Passive-only component palette:** Design custom networks using resistors, capacitors, inductors, and inductors with series resistance.
+*   **Speaker driver library:** Create, edit, delete, import, and export driver records, including Thiele/Small values and a source reference.
+*   **Enclosure response estimates:** Compare open-baffle, sealed, and ported low-frequency alignments using each driver's parameters.
+*   **Two-way acoustic response:** Plot woofer, tweeter, and combined SPL with idealized Butterworth or Linkwitz–Riley crossover slopes.
+*   **Schematic Editor:** Place and rotate LCR components, edit their values, and draw orthogonal wires.
+*   **Connectivity model:** Derive electrical nets from component pins and wires.
 
 ## Project Structure
 
 ```text
 Sources/db-Lab/
-├── Shared/                       # App state, engine client (UniFFI bindings)
-├── Schematic/                    # Four-layer architecture
+├── Shared/                       # App state and navigation
+├── Crossover/                    # Driver library, acoustic model, project workspace
+├── Schematic/                    # Schematic document and connectivity
 │   ├── Models.swift              # Layer 1: Schematic Document
 │   ├── ConnectivityBuilder.swift # Layer 2: Union-Find
 │   ├── ComponentRegistry.swift   # Data-driven descriptors
 │   └── Views/                    # Custom NSView/UIView Canvas
-├── Circuit/                      # General circuit simulator UI
 ```
 
 ## Quick Start (UI development without Rust)
@@ -61,47 +52,27 @@ cd db-Lab
 swift run
 ```
 
-The app compiles and runs with demonstration data — no Rust build needed. Circuit analysis results are synthetic mock data and do not solve the entered SPICE netlist.
-
-## Connecting the Real Engine
-
-1. **Build the XCFramework**
-   ```bash
-   cd db-Engine
-   ./scripts/build_xcframework.sh
-   ```
-   This produces `db-Lab/XCFrameworks/DbEngineFFI.xcframework` and the
-   generated Swift source files in `db-Lab/Sources/DbEngineFFI/`.
-
-2. **Uncomment the binary target** in `db-Lab/Package.swift`:
-   ```swift
-   .target(name: "DbEngineFFI", …)
-   .binaryTarget(name: "DbEngineFFIBinary", path: "XCFrameworks/…")
-   ```
-
-3. **Enable the UNIFFI_AVAILABLE flag** in Package.swift swiftSettings:
-   ```swift
-   .define("UNIFFI_AVAILABLE")
-   ```
-
-4. **Wire up EngineClient.swift**: replace the mock calls with the real
-   `CircuitEngine` object calls under `#if UNIFFI_AVAILABLE`.
+The app compiles and runs without a Rust build.
 
 ## Workflows
 
-### Circuit Simulator
-1. Choose **Netlist** to enter SPICE directly, or **Schematic** to place R, C, L, AC voltage/current sources, and ground.
-2. In schematic mode, choose a component and click the canvas to place it. Choose **Wire** and click two grid locations to connect them; component pins connect when they share a grid location.
-3. Select a placed component to edit its parameters or rotation.
-4. Configure analysis types (DC, AC, TRAN) and click **Run**.
-5. View Bode plot, DC operating point, or transient waveforms.
+### Driver Library
+1. Open **Speaker Drivers** in the sidebar and add manufacturer data or import a JSON library.
+2. Record the source (manufacturer datasheet URL or reference) with each driver. `Qts` is calculated from `Qes` and `Qms`.
+3. Export the complete local library as JSON for backup or transfer.
 
-The schematic netlist projection validates reference designators and positive component values. Inductors with series resistance are emitted as a series resistor and inductor. Simulation results remain mock data until the Rust engine is connected.
+The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON import/export uses an array of driver records with the `SpeakerDriver` fields shown in the editor; imports merge records by ID.
+
+### Speaker System
+1. Create a crossover project and select a woofer and tweeter from the library.
+2. Choose each driver's open-baffle, closed-box, or ported-box alignment and enter the required dimensions. For a ported box, enter diameter and tuning; the app estimates port length.
+3. Set the crossover frequency and idealized Butterworth (6–24 dB/octave) or Linkwitz–Riley (12 or 24 dB/octave) alignment, then choose **Simulate acoustic response**.
+4. Review the individual branch and combined estimated SPL curves. Design the passive LCR network separately in the schematic.
+
+The acoustic model is an initial Thiele/Small low-frequency approximation, not a measurement-matched prediction. It assumes the entered driver sensitivity is flat outside the modeled enclosure behavior, idealized electrical crossover filters, equal acoustic-center timing, and no room effects, diffraction, port losses, cone breakup, or excursion limiting. Port length uses a conventional Helmholtz estimate with a simple end correction. For a 12 dB/octave Linkwitz–Riley alignment, the tweeter branch is polarity-inverted. The response plot does not yet solve the custom LCR schematic against a driver's complex impedance; Bessel crossovers and automatic passive-component synthesis are also not yet available.
 
 ## Requirements
 - macOS 14+
 - iPadOS 17+
 - Xcode 15+ / Swift 6
-- For Rust build: Rust stable, `cargo install uniffi-bindgen`
-
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses SwiftUI's adaptive split navigation for tablet layouts.
