@@ -6,6 +6,7 @@
 // in an executable target. We use @main here.
 
 import SwiftUI
+import DBLabCore
 
 @main
 struct DbLabApp: App {

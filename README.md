@@ -8,7 +8,7 @@ The **Schematic is the document**: it contains component placement, wires, conne
 
 ### Layer 1: The Schematic Model (Source of Truth)
 This layer represents the visual design and its geometric context:
-*   **Symbols:** Component references, grid-aligned positions, rotations, and mirroring.
+*   **Symbols:** Component references, grid-aligned positions, rotations, and typed SI parameters.
 *   **Wires:** Orthogonal, grid-aligned point arrays representing physical traces.
 *   **Parameters:** Typed SI values stored on each component instance, with engineering-unit labels shown in the editor.
 
@@ -36,7 +36,9 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 ## Project Structure
 
 ```text
-Sources/db-Lab/
+Sources/
+├── db-LabApp/                    # Thin executable/application entry point
+└── db-Lab/                       # Reusable DBLabCore target
 ├── Shared/                       # App state and navigation
 ├── Crossover/                    # Driver library, acoustic model, project workspace
 ├── Schematic/                    # Schematic document and connectivity
@@ -46,14 +48,16 @@ Sources/db-Lab/
 │   └── Views/                    # Custom NSView/UIView Canvas
 ```
 
-## Quick Start (UI development without Rust)
+`DBLabCore` depends on NumericCore. Complex crossover systems are converted to an equivalent real block system and factored by NumericCore's Accelerate-backed LU solver. The application target contains no numerical engine of its own.
+
+## Quick Start
 
 ```bash
 cd db-Lab
 swift run
 ```
 
-The app compiles and runs without a Rust build.
+Swift Package Manager resolves the pinned NumericCore revision and its matching binary artifact automatically.
 
 ## Workflows
 
@@ -61,10 +65,10 @@ The app compiles and runs without a Rust build.
 1. Open **Speaker Drivers** in the sidebar and add manufacturer data or import a JSON library.
 2. Record the source (manufacturer datasheet URL or reference) with each driver. `Qts` is calculated from `Qes` and `Qms`.
 3. In a driver's editor, import frequency response (`.frd`) or impedance (`.zma`) data as UTF-8 text with two or three columns: frequency (Hz), magnitude (dB SPL for FRD or Ω for ZMA), and optional phase (degrees). Commas, tabs, and whitespace are accepted; comment lines starting with `#`, `;`, `*`, or `//` are ignored.
-4. Record a source URL/reference or measurement conditions before importing. Each dataset retains its filename, source reference, import date, frequency points, and whether phase was supplied. Data must contain at least two finite, positive-frequency rows; duplicate frequencies and non-positive impedance magnitudes are rejected.
+4. Record a source URL/reference or measurement conditions before importing. Each dataset retains its filename, source reference, import date, SHA-256 source hash, byte count, frequency points, and whether phase was supplied. Data must contain at least two finite, positive-frequency rows; duplicate frequencies and non-positive impedance magnitudes are rejected.
 5. Export the complete local library as JSON for backup or transfer.
 
-The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON import/export uses an array of driver records with the `SpeakerDriver` fields shown in the editor; imports merge records by ID.
+The library is stored in `Application Support/db-Lab/speaker-drivers.json` as a versioned archive; the previous unversioned array format migrates automatically. JSON interchange continues to use an array of driver records and imports merge records by ID.
 
 ### Speaker System
 1. Create a crossover project and select a woofer and tweeter from the library.
@@ -73,11 +77,11 @@ The library is stored in `Application Support/db-Lab/speaker-drivers.json`. JSON
 4. Build the passive network in the schematic. Select the source input net and each driver's output net below the schematic. Place a ground symbol on the common return; the simulator treats each driver as a load from its selected output to ground.
 5. Choose **Simulate electrical + acoustic response**. The simulator applies a 2.83 V RMS AC source to the input net, solves the passive network over frequency, and plots woofer, tweeter, and coherently summed response.
 
-The network solver supports passive resistors, capacitors, inductors, and inductors with series resistance, using complex nodal analysis and the selected drivers as loads. Selected ZMA data supplies the complex load; otherwise the solver approximates it as `Re + jωLe`. Selected FRD data supplies SPL magnitude and phase; absent FRD, the simulator uses the initial Thiele/Small low-frequency enclosure approximation. Phase-less measurements are treated as zero phase and identified in simulation warnings. Measured data limits the plotted sweep to the common frequency range covered by all selected datasets.
+The network solver supports passive resistors, capacitors, inductors, and inductors with series resistance, using complex nodal analysis and the selected drivers as loads. Matrix factorization is provided by NumericCore. Selected ZMA data supplies the complex load; otherwise the solver uses a normalized Thiele/Small motional-impedance model from `Fs`, `Qes`, `Qms`, `Re`, and `Le`. Selected FRD data supplies SPL magnitude and phase; absent FRD, the simulator uses the initial Thiele/Small low-frequency enclosure approximation. Phase-less measurements are treated as zero phase and identified in simulation warnings. Measured data limits the plotted sweep to the common frequency range covered by all selected datasets.
 
 This remains a first-pass on-axis estimate, not a measurement-matched full loudspeaker simulation. The virtual source is ideal (no source/output resistance); measured FRD is assumed to represent the complete driver response at 2.83 V / 1 m; the enclosure approximation does not add to measured FRD. Acoustic-center offsets, baffle diffraction, room effects, port losses, cone breakup, power compression, and excursion limits are not modeled. Port length uses a conventional Helmholtz estimate with a simple end correction. The reference crossover frequency is a design note and does not alter the solved network; Bessel filter synthesis and automatic component selection are not implemented.
 
-Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, driver IDs, measurement selections, stable schematic pin references for node assignments, and schematic symbols and wires.
+Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, immutable snapshots of the selected driver revisions and measurements, stable schematic pin references for node assignments, and schematic symbols and wires. Simulations run from an immutable request off the main actor and can be cancelled by starting a new run.
 
 ## Requirements
 - macOS 14+

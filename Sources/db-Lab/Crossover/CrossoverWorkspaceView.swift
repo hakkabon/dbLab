@@ -139,6 +139,11 @@ struct CrossoverWorkspaceView: View {
                 .onChange(of: driverID.wrappedValue) { _, _ in
                     frequencyResponseID.wrappedValue = nil
                     impedanceID.wrappedValue = nil
+                    if band == .lowPass {
+                        document.wooferDriverSnapshot = nil
+                    } else {
+                        document.tweeterDriverSnapshot = nil
+                    }
                 }
 
                 if let id = driverID.wrappedValue,

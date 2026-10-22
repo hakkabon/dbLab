@@ -1,6 +1,8 @@
 import Foundation
+import NumericCore
+import NumericCoreAccelerate
 
-struct CrossoverSimulationResult {
+struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
     var warnings: [String]
 }
@@ -43,13 +45,41 @@ enum CrossoverNetworkSimulationError: LocalizedError {
     }
 }
 
-@MainActor
 enum CrossoverNetworkSimulator {
     private static let referenceVoltage = 2.83
     private static let pointsPerOctave = 24
 
+    @MainActor
     static func simulate(
         schematic: SchematicDocument,
+        inputNetID: Int?,
+        wooferOutputNetID: Int?,
+        tweeterOutputNetID: Int?,
+        woofer: AcousticBranchSettings,
+        tweeter: AcousticBranchSettings,
+        wooferFrequencyResponse: DriverMeasurement?,
+        tweeterFrequencyResponse: DriverMeasurement?,
+        wooferImpedance: DriverMeasurement?,
+        tweeterImpedance: DriverMeasurement?
+    ) throws -> CrossoverSimulationResult {
+        try simulate(
+            symbols: schematic.symbols,
+            wires: schematic.wires,
+            inputNetID: inputNetID,
+            wooferOutputNetID: wooferOutputNetID,
+            tweeterOutputNetID: tweeterOutputNetID,
+            woofer: woofer,
+            tweeter: tweeter,
+            wooferFrequencyResponse: wooferFrequencyResponse,
+            tweeterFrequencyResponse: tweeterFrequencyResponse,
+            wooferImpedance: wooferImpedance,
+            tweeterImpedance: tweeterImpedance
+        )
+    }
+
+    static func simulate(
+        symbols: [SymbolInstance],
+        wires: [WireSegment],
         inputNetID: Int?,
         wooferOutputNetID: Int?,
         tweeterOutputNetID: Int?,
@@ -64,7 +94,7 @@ enum CrossoverNetworkSimulator {
         guard let wooferOutputNetID else { throw CrossoverNetworkSimulationError.missingNode("woofer output") }
         guard let tweeterOutputNetID else { throw CrossoverNetworkSimulationError.missingNode("tweeter output") }
 
-        let nets = ConnectivityBuilder.build(symbols: schematic.symbols, wires: schematic.wires)
+        let nets = ConnectivityBuilder.build(symbols: symbols, wires: wires)
         guard let groundNet = nets.first(where: \.isGround) else {
             throw CrossoverNetworkSimulationError.missingGround
         }
@@ -89,7 +119,7 @@ enum CrossoverNetworkSimulator {
         try validateMeasurement(wooferImpedance, kind: .impedance, driver: woofer.driver)
         try validateMeasurement(tweeterImpedance, kind: .impedance, driver: tweeter.driver)
 
-        let components = try componentBranches(schematic: schematic, nets: nets)
+        let components = try componentBranches(symbols: symbols, nets: nets)
         let bounds = frequencyBounds(
             wooferFrequencyResponse: wooferFrequencyResponse,
             tweeterFrequencyResponse: tweeterFrequencyResponse,
@@ -110,6 +140,7 @@ enum CrossoverNetworkSimulator {
         var points: [AcousticResponsePoint] = []
 
         for frequency in frequencies {
+            try Task.checkCancellation()
             var branches = components.map {
                 CircuitBranch(
                     firstNodeID: groundNetIDs.contains($0.firstNodeID) ? groundNet.id : $0.firstNodeID,
@@ -171,7 +202,7 @@ enum CrossoverNetworkSimulator {
             warnings.append("A driver has no selected measured response; its enclosure model estimates acoustic output.")
         }
         if wooferImpedance == nil || tweeterImpedance == nil {
-            warnings.append("A driver has no selected measured impedance; its Re + jωLe model estimates the load.")
+            warnings.append("A driver has no selected measured impedance; a Thiele/Small motional-impedance model estimates the load.")
         }
         if wooferImpedance?.hasPhaseData == false || tweeterImpedance?.hasPhaseData == false {
             warnings.append("A selected impedance dataset lacks phase; that driver's load is treated as purely resistive between samples.")
@@ -222,7 +253,7 @@ enum CrossoverNetworkSimulator {
     }
 
     private static func componentBranches(
-        schematic: SchematicDocument,
+        symbols: [SymbolInstance],
         nets: [Net]
     ) throws -> [PassiveComponentBranch] {
         let nodeByPin = Dictionary(
@@ -232,7 +263,7 @@ enum CrossoverNetworkSimulator {
         )
         var branches: [PassiveComponentBranch] = []
 
-        for symbol in schematic.symbols {
+        for symbol in symbols {
             guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
                 throw CrossoverNetworkSimulationError.missingComponent(symbol.refDes)
             }
@@ -313,10 +344,26 @@ enum CrossoverNetworkSimulator {
         if let measurement, let value = interpolatedComplex(measurement, frequencyHz: frequencyHz) {
             return value
         }
-        return ComplexValue(
+        let electrical = ComplexValue(
             real: driver.reOhms,
             imaginary: 2 * Double.pi * frequencyHz * driver.leMilliHenries / 1_000
         )
+        // The available Fs/Qes/Qms/Re parameters are sufficient to express
+        // the classic motional impedance in normalized form without inventing
+        // Mms, Cms, Rms, or Bl individually:
+        //   Zm = Re*(Qms/Qes) / (1 + j*Qms*(f/Fs - Fs/f))
+        // This restores the resonance peak that materially loads passive
+        // crossovers. Imported ZMA remains the preferred source of truth.
+        let normalizedDetuning = frequencyHz / driver.fsHz - driver.fsHz / frequencyHz
+        let mechanicalDenominator = ComplexValue(
+            real: 1,
+            imaginary: driver.qms * normalizedDetuning
+        )
+        let motional = ComplexValue(
+            real: driver.reOhms * driver.qms / driver.qes,
+            imaginary: 0
+        ) / mechanicalDenominator
+        return electrical + motional
     }
 
     private static func acousticResponse(
@@ -477,47 +524,49 @@ enum CrossoverNetworkSimulator {
     ) throws -> [ComplexValue] {
         let size = rhs.count
         guard size > 0 else { return [] }
-        var matrix = matrix
-        var rhs = rhs
-        let matrixScale = matrix.flatMap { $0 }.map(\.magnitude).max() ?? 0
-        guard matrixScale.isFinite, matrixScale > 0 else {
+        guard matrix.count == size, matrix.allSatisfy({ $0.count == size }) else {
             throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
         }
-        let tolerance = matrixScale * 1e-12
 
-        for column in 0..<size {
-            guard let pivotRow = (column..<size).max(by: {
-                matrix[$0][column].magnitude < matrix[$1][column].magnitude
-            }), matrix[pivotRow][column].magnitude > tolerance else {
-                throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-            }
-            if pivotRow != column {
-                matrix.swapAt(pivotRow, column)
-                rhs.swapAt(pivotRow, column)
-            }
-            for row in (column + 1)..<size {
-                let factor = matrix[row][column] / matrix[column][column]
-                for index in column..<size {
-                    matrix[row][index] = matrix[row][index] - factor * matrix[column][index]
-                }
-                rhs[row] = rhs[row] - factor * rhs[column]
-            }
-        }
-
-        var solution = Array(repeating: ComplexValue(real: 0, imaginary: 0), count: size)
-        for row in stride(from: size - 1, through: 0, by: -1) {
-            var value = rhs[row]
-            if row + 1 < size {
-                for column in (row + 1)..<size {
-                    value = value - matrix[row][column] * solution[column]
+        // NumericCore currently exposes real-valued dense LU. Map A·z=b to
+        // the equivalent 2N real block system [Re(A) -Im(A); Im(A) Re(A)].
+        // This keeps matrix factorization and its numerical diagnostics in the
+        // shared numerical core while preserving arbitrary measured impedances.
+        let realSystem = (0..<(2 * size)).map { row in
+            (0..<(2 * size)).map { column -> Double in
+                switch (row < size, column < size) {
+                case (true, true): matrix[row][column].real
+                case (true, false): -matrix[row][column - size].imaginary
+                case (false, true): matrix[row - size][column].imaginary
+                case (false, false): matrix[row - size][column - size].real
                 }
             }
-            solution[row] = value / matrix[row][row]
-            guard solution[row].magnitude.isFinite else {
+        }
+        let realRHS = rhs.map(\.real) + rhs.map(\.imaginary)
+
+        do {
+            let numericMatrix = try Matrix<Double>(rows: realSystem)
+            let report = try AccelerateBackend.solveLUReport(
+                numericMatrix,
+                Vector(realRHS)
+            )
+            guard report.termination == .converged,
+                  let values = report.solution?.storage,
+                  values.count == 2 * size else {
                 throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
             }
+            let solution = (0..<size).map {
+                ComplexValue(real: values[$0], imaginary: values[$0 + size])
+            }
+            guard solution.allSatisfy({ $0.real.isFinite && $0.imaginary.isFinite }) else {
+                throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
+            }
+            return solution
+        } catch is CrossoverNetworkSimulationError {
+            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
+        } catch {
+            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
         }
-        return solution
     }
 }
 

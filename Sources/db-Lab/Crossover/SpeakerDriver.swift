@@ -1,7 +1,12 @@
 import Foundation
 import Combine
 
-struct SpeakerDriver: Codable, Identifiable, Hashable {
+private struct DriverLibraryArchive: Codable {
+    let schemaVersion: Int
+    let drivers: [SpeakerDriver]
+}
+
+struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
     var manufacturer: String
     var model: String
@@ -113,6 +118,7 @@ struct SpeakerDriver: Codable, Identifiable, Hashable {
 
 @MainActor
 final class DriverLibrary: ObservableObject {
+    private static let currentSchemaVersion = 1
     @Published private(set) var drivers: [SpeakerDriver] = []
     @Published private(set) var errorMessage: String?
 
@@ -181,7 +187,19 @@ final class DriverLibrary: ObservableObject {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
             let data = try Data(contentsOf: fileURL)
-            let stored = try JSONDecoder().decode([SpeakerDriver].self, from: data)
+            let decoder = JSONDecoder()
+            let stored: [SpeakerDriver]
+            if let archive = try? decoder.decode(DriverLibraryArchive.self, from: data) {
+                guard archive.schemaVersion == Self.currentSchemaVersion else {
+                    throw DriverLibraryError.invalidDriver(
+                        "Speaker driver library version \(archive.schemaVersion) is not supported."
+                    )
+                }
+                stored = archive.drivers
+            } else {
+                // Migrate the prototype's unversioned top-level array.
+                stored = try decoder.decode([SpeakerDriver].self, from: data)
+            }
             guard stored.allSatisfy({ $0.validationMessage == nil }) else {
                 throw DriverLibraryError.invalidDriver("The saved driver library contains invalid data.")
             }
@@ -199,7 +217,11 @@ final class DriverLibrary: ObservableObject {
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try encoder.encode(drivers).write(to: fileURL, options: .atomic)
+            let archive = DriverLibraryArchive(
+                schemaVersion: Self.currentSchemaVersion,
+                drivers: drivers
+            )
+            try encoder.encode(archive).write(to: fileURL, options: .atomic)
         } catch {
             throw DriverLibraryError.persistence(error.localizedDescription)
         }

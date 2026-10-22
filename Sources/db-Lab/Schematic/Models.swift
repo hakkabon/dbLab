@@ -1,7 +1,7 @@
 import CoreGraphics
 import SwiftUI
 
-public struct GridPoint: Hashable, Codable {
+public struct GridPoint: Hashable, Codable, Sendable {
     public let x: Int
     public let y: Int
     public static let gridSize: CGFloat = 20.0
@@ -16,7 +16,7 @@ public struct GridPoint: Hashable, Codable {
     }
 }
 
-public struct PinRef: Hashable, Codable {
+public struct PinRef: Hashable, Codable, Sendable {
     public let symbolId: UUID
     public let pinId: String
 }
@@ -28,7 +28,7 @@ public struct Net: Identifiable {
     public var isGround: Bool = false
 }
 
-public struct SymbolInstance: Identifiable, Equatable, Codable {
+public struct SymbolInstance: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public var descriptorId: String
     public var refDes: String
@@ -53,7 +53,7 @@ public struct SymbolInstance: Identifiable, Equatable, Codable {
     }
 }
 
-public struct WireSegment: Identifiable, Equatable, Codable {
+public struct WireSegment: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public var points: [GridPoint]
     

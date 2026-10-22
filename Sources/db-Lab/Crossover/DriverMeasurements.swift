@@ -1,6 +1,17 @@
 import Foundation
+import CryptoKit
 
-enum DriverMeasurementKind: String, Codable, CaseIterable, Identifiable {
+struct DriverMeasurementReference: Codable, Hashable, Sendable {
+    var referenceVoltageRMS: Double?
+    var referencePowerWatts: Double?
+    var distanceMeters: Double?
+    var angleDegrees: Double?
+    var fixture: String?
+    var smoothing: String?
+    var phaseDescription: String?
+}
+
+enum DriverMeasurementKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case frequencyResponse
     case impedance
 
@@ -28,7 +39,7 @@ enum DriverMeasurementKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct DriverMeasurementPoint: Codable, Hashable, Identifiable {
+struct DriverMeasurementPoint: Codable, Hashable, Identifiable, Sendable {
     var frequencyHz: Double
     var magnitude: Double
     var phaseDegrees: Double
@@ -36,7 +47,7 @@ struct DriverMeasurementPoint: Codable, Hashable, Identifiable {
     var id: Double { frequencyHz }
 }
 
-struct DriverMeasurement: Codable, Hashable, Identifiable {
+struct DriverMeasurement: Codable, Hashable, Identifiable, Sendable {
     var id = UUID()
     var kind: DriverMeasurementKind
     var sourceFileName: String
@@ -44,6 +55,9 @@ struct DriverMeasurement: Codable, Hashable, Identifiable {
     var importedAt: Date
     var hasPhaseData: Bool
     var points: [DriverMeasurementPoint]
+    var reference: DriverMeasurementReference? = nil
+    var sourceSHA256: String? = nil
+    var sourceByteCount: Int? = nil
 
     var validationMessage: String? {
         guard !sourceFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -202,7 +216,9 @@ enum DriverMeasurementParser {
             sourceReference: sourceReference.trimmingCharacters(in: .whitespacesAndNewlines),
             importedAt: importedAt,
             hasPhaseData: rowsHavePhase ?? false,
-            points: rows
+            points: rows,
+            sourceSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            sourceByteCount: data.count
         )
         if let message = measurement.validationMessage {
             throw DriverMeasurementImportError.malformedRow(line: 0, message: message)

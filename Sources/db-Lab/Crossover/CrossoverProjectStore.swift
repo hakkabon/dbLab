@@ -6,6 +6,8 @@ struct CrossoverProjectSnapshot: Codable, Identifiable {
     var targetFrequencyHz: Double
     var wooferDriverID: UUID?
     var tweeterDriverID: UUID?
+    var wooferDriverSnapshot: SpeakerDriver? = nil
+    var tweeterDriverSnapshot: SpeakerDriver? = nil
     var wooferEnclosure: EnclosureType
     var tweeterEnclosure: EnclosureType
     var wooferBoxVolumeLiters: Double

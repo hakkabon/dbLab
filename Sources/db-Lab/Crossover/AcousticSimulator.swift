@@ -1,6 +1,6 @@
 import Foundation
 
-enum EnclosureType: String, CaseIterable, Identifiable, Codable {
+enum EnclosureType: String, CaseIterable, Identifiable, Codable, Sendable {
     case openBaffle = "Open baffle"
     case closedBox = "Closed box"
     case portedBox = "Ported box"
@@ -8,19 +8,19 @@ enum EnclosureType: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
-enum CrossoverAlignment: String, CaseIterable, Identifiable, Equatable, Codable {
+enum CrossoverAlignment: String, CaseIterable, Identifiable, Equatable, Codable, Sendable {
     case butterworth = "Butterworth"
     case linkwitzRiley = "Linkwitz–Riley"
 
     var id: String { rawValue }
 }
 
-enum DriverBand: Equatable {
+enum DriverBand: Equatable, Sendable {
     case lowPass
     case highPass
 }
 
-struct AcousticBranchSettings {
+struct AcousticBranchSettings: Sendable {
     let driver: SpeakerDriver
     let enclosure: EnclosureType
     let boxVolumeLiters: Double
@@ -30,7 +30,7 @@ struct AcousticBranchSettings {
     let band: DriverBand
 }
 
-struct AcousticResponsePoint: Identifiable {
+struct AcousticResponsePoint: Identifiable, Sendable {
     let frequencyHz: Double
     let wooferDb: Double
     let tweeterDb: Double
@@ -259,7 +259,7 @@ enum AcousticSimulator {
     }
 }
 
-struct ComplexValue {
+struct ComplexValue: Sendable {
     var real: Double
     var imaginary: Double
 

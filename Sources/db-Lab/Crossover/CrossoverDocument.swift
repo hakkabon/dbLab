@@ -10,6 +10,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var schematic = SchematicDocument()
     @Published var wooferDriverID: UUID?
     @Published var tweeterDriverID: UUID?
+    @Published var wooferDriverSnapshot: SpeakerDriver?
+    @Published var tweeterDriverSnapshot: SpeakerDriver?
     @Published var wooferEnclosure = EnclosureType.closedBox
     @Published var tweeterEnclosure = EnclosureType.closedBox
     @Published var wooferBoxVolumeLiters = 30.0
@@ -34,6 +36,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var simulationError: String?
     @Published var isSimulating = false
     private var schematicSubscription: AnyCancellable?
+    private var simulationTask: Task<Void, Never>?
 
     init() {
         id = UUID()
@@ -46,6 +49,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         targetFrequencyHz = snapshot.targetFrequencyHz
         wooferDriverID = snapshot.wooferDriverID
         tweeterDriverID = snapshot.tweeterDriverID
+        wooferDriverSnapshot = snapshot.wooferDriverSnapshot
+        tweeterDriverSnapshot = snapshot.tweeterDriverSnapshot
         wooferEnclosure = snapshot.wooferEnclosure
         tweeterEnclosure = snapshot.tweeterEnclosure
         wooferBoxVolumeLiters = snapshot.wooferBoxVolumeLiters
@@ -76,6 +81,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             targetFrequencyHz: targetFrequencyHz,
             wooferDriverID: wooferDriverID,
             tweeterDriverID: tweeterDriverID,
+            wooferDriverSnapshot: wooferDriverSnapshot,
+            tweeterDriverSnapshot: tweeterDriverSnapshot,
             wooferEnclosure: wooferEnclosure,
             tweeterEnclosure: tweeterEnclosure,
             wooferBoxVolumeLiters: wooferBoxVolumeLiters,
@@ -146,19 +153,25 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         simulationWarnings = []
         acousticResponse = []
         guard let wooferID = wooferDriverID,
-              let woofer = library.drivers.first(where: { $0.id == wooferID }) else {
+              let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
+                ?? library.drivers.first(where: { $0.id == wooferID }) else {
             simulationError = AcousticSimulationError.missingDriver("woofer").localizedDescription
             return
         }
         guard let tweeterID = tweeterDriverID,
-              let tweeter = library.drivers.first(where: { $0.id == tweeterID }) else {
+              let tweeter = tweeterDriverSnapshot.flatMap({ $0.id == tweeterID ? $0 : nil })
+                ?? library.drivers.first(where: { $0.id == tweeterID }) else {
             simulationError = AcousticSimulationError.missingDriver("tweeter").localizedDescription
             return
         }
-        isSimulating = true
+        // Freeze the exact driver revision and imported measurements used by
+        // this project. Library edits or deletion no longer rewrite history.
+        wooferDriverSnapshot = woofer
+        tweeterDriverSnapshot = tweeter
         do {
-            let result = try CrossoverNetworkSimulator.simulate(
-                schematic: schematic,
+            let request = CrossoverSimulationRequest(
+                symbols: schematic.symbols,
+                wires: schematic.wires,
                 inputNetID: inputNetID,
                 wooferOutputNetID: wooferOutputNetID,
                 tweeterOutputNetID: tweeterOutputNetID,
@@ -201,12 +214,28 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                     driver: tweeter
                 )
             )
-            acousticResponse = result.response
-            simulationWarnings = result.warnings
+            simulationTask?.cancel()
+            isSimulating = true
+            simulationTask = Task { [weak self] in
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        try request.run()
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    self?.acousticResponse = result.response
+                    self?.simulationWarnings = result.warnings
+                    self?.isSimulating = false
+                } catch is CancellationError {
+                    self?.isSimulating = false
+                } catch {
+                    self?.simulationError = error.localizedDescription
+                    self?.isSimulating = false
+                }
+            }
         } catch {
             simulationError = error.localizedDescription
+            isSimulating = false
         }
-        isSimulating = false
     }
 
     private func measurement(
@@ -222,5 +251,35 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             )
         }
         return match
+    }
+}
+
+private struct CrossoverSimulationRequest: Sendable {
+    let symbols: [SymbolInstance]
+    let wires: [WireSegment]
+    let inputNetID: Int?
+    let wooferOutputNetID: Int?
+    let tweeterOutputNetID: Int?
+    let woofer: AcousticBranchSettings
+    let tweeter: AcousticBranchSettings
+    let wooferFrequencyResponse: DriverMeasurement?
+    let tweeterFrequencyResponse: DriverMeasurement?
+    let wooferImpedance: DriverMeasurement?
+    let tweeterImpedance: DriverMeasurement?
+
+    func run() throws -> CrossoverSimulationResult {
+        try CrossoverNetworkSimulator.simulate(
+            symbols: symbols,
+            wires: wires,
+            inputNetID: inputNetID,
+            wooferOutputNetID: wooferOutputNetID,
+            tweeterOutputNetID: tweeterOutputNetID,
+            woofer: woofer,
+            tweeter: tweeter,
+            wooferFrequencyResponse: wooferFrequencyResponse,
+            tweeterFrequencyResponse: tweeterFrequencyResponse,
+            wooferImpedance: wooferImpedance,
+            tweeterImpedance: tweeterImpedance
+        )
     }
 }

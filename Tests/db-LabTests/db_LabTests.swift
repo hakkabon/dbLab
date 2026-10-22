@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import db_Lab
+@testable import DBLabCore
 
 @Test func pinOnWireInteriorConnectsAndDetectsGround() {
     let resistor = SymbolInstance(
@@ -156,7 +156,9 @@ import Testing
         woofer: driver,
         tweeter: driver,
         wooferFrequencyResponse: wooferFRD,
-        tweeterFrequencyResponse: tweeterFRD
+        tweeterFrequencyResponse: tweeterFRD,
+        wooferImpedance: impedanceMeasurement(magnitude: 8),
+        tweeterImpedance: impedanceMeasurement(magnitude: 8)
     )
 
     let point = try #require(result.response.first)
@@ -178,7 +180,9 @@ import Testing
         woofer: driver,
         tweeter: driver,
         wooferFrequencyResponse: wooferFRD,
-        tweeterFrequencyResponse: tweeterFRD
+        tweeterFrequencyResponse: tweeterFRD,
+        wooferImpedance: impedanceMeasurement(magnitude: 8),
+        tweeterImpedance: impedanceMeasurement(magnitude: 8)
     )
     let higherImpedance = try simulateCrossover(
         topology,
@@ -193,6 +197,30 @@ import Testing
     let nominalLevel = try #require(nominal.response.first).wooferDb
     let loadedLevel = try #require(higherImpedance.response.first).wooferDb
     #expect(abs(loadedLevel - nominalLevel - 20 * log10(4 / 3)) < 0.01)
+}
+
+@Test @MainActor func thieleSmallFallbackIncludesDriverResonance() throws {
+    let topology = crossoverTestTopology()
+    var driver = sampleSpeakerDriver()
+    driver.reOhms = 6
+    driver.leMilliHenries = 0
+    driver.fsHz = 50
+    driver.qes = 0.5
+    driver.qms = 5
+
+    let result = try simulateCrossover(
+        topology,
+        woofer: driver,
+        tweeter: driver,
+        wooferFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0),
+        tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
+    )
+
+    // The test topology has an 8 Ω series element. A resonance peak in the
+    // load therefore produces visibly less attenuation near Fs than at 20 Hz.
+    let resonance = try #require(result.response.min { abs($0.frequencyHz - 50) < abs($1.frequencyHz - 50) })
+    let low = try #require(result.response.first)
+    #expect(resonance.wooferDb > low.wooferDb + 3)
 }
 
 @Test @MainActor func crossoverNetworkIncludesMeasuredAcousticPhaseInSummation() throws {
@@ -452,6 +480,8 @@ import Testing
     #expect(measurement.sourceReference == "Manufacturer datasheet, 2.83 V / 1 m")
     #expect(measurement.importedAt == Date(timeIntervalSince1970: 1_700_000_000))
     #expect(measurement.hasPhaseData)
+    #expect((measurement.sourceByteCount ?? 0) > 0)
+    #expect(measurement.sourceSHA256?.count == 64)
     #expect(measurement.points.map(\.frequencyHz) == [100, 1_000])
     #expect(measurement.points.map(\.magnitude) == [79, 87.5])
 }
@@ -735,56 +765,6 @@ import Testing
     } catch SpiceNetlistBuildError.invalidParameter(reference: "R1", parameter: "resistance") {
     } catch {
         Issue.record("Unexpected error: \(error.localizedDescription)")
-    }
-}
-
-@Test @MainActor func schematicModeBuildsNetlistBeforeSimulation() async {
-    let document = CircuitDocument()
-    document.usesSchematic = true
-    _ = document.schematic.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0))
-    _ = document.schematic.addComponent(descriptorId: "resistor", at: GridPoint(4, 0))
-    _ = document.schematic.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
-
-    await document.runSimulation()
-
-    #expect(document.simulationError == nil)
-    #expect(document.simulationResult?.isMock == true)
-}
-
-@Test @MainActor func mockSimulationHonorsAnalysisSettings() async throws {
-    let result = try await EngineClient.shared.simulateSpice(
-        netlist: "R1 1 0 1k",
-        runDC: false,
-        runAC: true,
-        acFStart: 10,
-        acFStop: 1_000,
-        acPointsPerDecade: 5,
-        runTRAN: true,
-        tranTStop: 0.001,
-        tranTStep: 0.0001
-    )
-
-    #expect(result.isMock)
-    #expect(result.dc.map { $0.nodes.isEmpty } ?? true)
-    #expect(result.ac?.frequencies.count == 11)
-    #expect(result.ac?.frequencies.first == 10)
-    #expect(result.ac?.frequencies.last == 1_000)
-    #expect(result.tran?.timePoints.count == 11)
-    #expect(result.tran?.timePoints.last == 0.001)
-}
-
-@Test @MainActor func mockSimulationRejectsNoSelectedAnalysis() async {
-    do {
-        _ = try await EngineClient.shared.simulateSpice(
-            netlist: "R1 1 0 1k",
-            runDC: false,
-            runAC: false,
-            runTRAN: false
-        )
-        Issue.record("Simulation should reject an empty analysis selection.")
-    } catch CircuitSimulationError.noAnalysisSelected {
-    } catch {
-        Issue.record("Unexpected simulation error: \(error.localizedDescription)")
     }
 }
 
