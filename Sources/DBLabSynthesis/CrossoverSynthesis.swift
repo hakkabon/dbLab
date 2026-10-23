@@ -211,12 +211,12 @@ public enum PassiveCrossoverSynthesizer {
         )
     }
 
-    private struct BranchPoint {
+    struct BranchPoint {
         let outputMagnitude: Double
         let inputImpedance: ACComplex
     }
 
-    private static func branchResponse(
+    static func branchResponse(
         band: SynthesisBand, components: [Double],
         load: [ACImpedanceSample], frequencies: [Double]
     ) throws -> [BranchPoint] {
@@ -335,7 +335,7 @@ public enum PassiveCrossoverSynthesizer {
         } / Double(frequencies.count)
     }
 
-    private static func targetMagnitudes(
+    static func targetMagnitudes(
         _ ratio: Double, order: Int, alignment: SynthesisAlignment
     ) -> (low: Double, high: Double) {
         switch alignment {

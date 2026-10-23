@@ -27,6 +27,7 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   **Crossover projects:** Set a target crossover frequency, select two drivers, and model woofer/tweeter branches.
 *   **Passive-only component palette:** Design custom networks using resistors, capacitors, inductors, and inductors with series resistance.
 *   **Crossover synthesis:** Optimize Butterworth or Linkwitz–Riley passive ladders against complex driver loads, standardize them to E24 values, inspect fit and minimum impedance, and apply them to the editable schematic.
+*   **Robust design:** Analyze component and driver-load tolerances with reproducible stratified sampling, inspect percentile response envelopes and yield, identify sensitive components, and apply a tolerance-resistant E24 refinement.
 *   **Speaker driver library:** Create, edit, delete, import, and export driver records, including Thiele/Small values and a source reference.
 *   **Design-grade enclosure simulation:** Compare open-baffle, sealed, and vented alignments with enclosure-modified impedance, complex acoustic pressure, cone excursion, and vent air speed.
 *   **Two-way acoustic response:** Solve the passive LCR schematic using driver impedance and combine electrical branch voltages with measured or modeled acoustic response.

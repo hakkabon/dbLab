@@ -226,7 +226,114 @@ struct CrossoverWorkspaceView: View {
                     .chartXAxisLabel("Frequency (Hz)")
                     .chartYAxisLabel("Electrical transfer (dB)")
                     .frame(height: 210)
-                    Button("Apply synthesized schematic", systemImage: "point.3.connected.trianglepath.dotted") {
+                    Divider()
+                    Text("Robust design").font(.subheadline.weight(.semibold))
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)],
+                        alignment: .leading, spacing: 10
+                    ) {
+                        numericSetting(
+                            "Component tolerance", unit: "%",
+                            value: $document.robustComponentTolerancePercent
+                        )
+                        numericSetting(
+                            "Load magnitude variation", unit: "%",
+                            value: $document.robustLoadTolerancePercent
+                        )
+                        numericSetting(
+                            "Load phase variation", unit: "°",
+                            value: $document.robustLoadPhaseToleranceDegrees
+                        )
+                        numericSetting(
+                            "Allowed response error", unit: "dB",
+                            value: $document.robustAllowedErrorDecibels
+                        )
+                        Stepper(
+                            "Samples: \(document.robustSampleCount)",
+                            value: $document.robustSampleCount, in: 20...2_000, step: 20
+                        )
+                    }
+                    Button {
+                        document.analyzeRobustness()
+                    } label: {
+                        if document.isAnalyzingRobustness {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Analyze and robustify", systemImage: "shield.lefthalf.filled")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(document.isAnalyzingRobustness)
+                    if let error = document.robustDesignError {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    if let robust = document.robustDesignResult {
+                        HStack(spacing: 18) {
+                            Text("Yield: \(robust.yieldPercent.formatted(.number.precision(.fractionLength(1))))%")
+                            Text("Worst error: \(robust.worstCaseMagnitudeErrorDecibels.formatted(.number.precision(.fractionLength(2)))) dB")
+                            Text("Worst input: \(robust.worstCaseMinimumImpedanceOhms.formatted(.number.precision(.fractionLength(2)))) Ω")
+                            Text("\(robust.changedComponentCount) E24 changes")
+                        }
+                        .font(.caption.monospacedDigit())
+                        Chart {
+                            ForEach(robust.envelope, id: \.frequencyHz) { point in
+                                AreaMark(
+                                    x: .value("Frequency", point.frequencyHz),
+                                    yStart: .value("Low 5%", point.lowPassP05Decibels),
+                                    yEnd: .value("Low 95%", point.lowPassP95Decibels)
+                                )
+                                .foregroundStyle(.blue.opacity(0.18))
+                                AreaMark(
+                                    x: .value("Frequency", point.frequencyHz),
+                                    yStart: .value("High 5%", point.highPassP05Decibels),
+                                    yEnd: .value("High 95%", point.highPassP95Decibels)
+                                )
+                                .foregroundStyle(.orange.opacity(0.18))
+                                LineMark(
+                                    x: .value("Frequency", point.frequencyHz),
+                                    y: .value("Low median", point.lowPassMedianDecibels),
+                                    series: .value("Median", "Low-pass")
+                                )
+                                .foregroundStyle(.blue)
+                                LineMark(
+                                    x: .value("Frequency", point.frequencyHz),
+                                    y: .value("High median", point.highPassMedianDecibels),
+                                    series: .value("Median", "High-pass")
+                                )
+                                .foregroundStyle(.orange)
+                            }
+                        }
+                        .chartXScale(type: .log)
+                        .chartXAxisLabel("Frequency (Hz)")
+                        .chartYAxisLabel("Tolerance envelope (dB)")
+                        .frame(height: 210)
+                        if let mostSensitive = robust.sensitivities.first {
+                            Text("Most sensitive: \(mostSensitive.componentID), \(mostSensitive.worstCaseMagnitudeShiftDecibels.formatted(.number.precision(.fractionLength(2)))) dB span at ±\(document.robustComponentTolerancePercent.formatted(.number.precision(.fractionLength(1))))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if robust.changedComponentCount > 0 {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 260), alignment: .leading)],
+                                alignment: .leading, spacing: 8
+                            ) {
+                                synthesizedBranch(
+                                    robust.recommendedDesign.lowPass,
+                                    title: "Robust woofer values"
+                                )
+                                synthesizedBranch(
+                                    robust.recommendedDesign.highPass,
+                                    title: "Robust tweeter values"
+                                )
+                            }
+                        }
+                    }
+                    Button(
+                        document.robustDesignResult == nil
+                            ? "Apply synthesized schematic" : "Apply robust synthesized schematic",
+                        systemImage: "point.3.connected.trianglepath.dotted"
+                    ) {
                         isApplySynthesisConfirmationPresented = true
                     }
                     .buttonStyle(.bordered)

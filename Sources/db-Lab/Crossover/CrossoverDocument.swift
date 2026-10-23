@@ -43,9 +43,19 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var synthesisResult: CrossoverSynthesisResult?
     @Published var synthesisError: String?
     @Published var isSynthesizing = false
+    @Published var robustComponentTolerancePercent = 5.0
+    @Published var robustLoadTolerancePercent = 5.0
+    @Published var robustLoadPhaseToleranceDegrees = 3.0
+    @Published var robustAllowedErrorDecibels = 2.0
+    @Published var robustSampleCount = 200
+    @Published var robustDesignResult: RobustDesignResult?
+    @Published var robustDesignError: String?
+    @Published var isAnalyzingRobustness = false
     private var schematicSubscription: AnyCancellable?
     private var simulationTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
+    private var robustDesignTask: Task<Void, Never>?
+    private var lastSynthesisRequest: CrossoverSynthesisRequest?
 
     init() {
         id = UUID()
@@ -323,6 +333,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     func synthesizeCrossover(using library: DriverLibrary) {
         synthesisError = nil
         synthesisResult = nil
+        robustDesignResult = nil
+        robustDesignError = nil
         guard let wooferID = wooferDriverID,
               let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
                 ?? library.drivers.first(where: { $0.id == wooferID }) else {
@@ -364,6 +376,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                 ),
                 minimumInputImpedanceOhms: synthesisMinimumImpedanceOhms
             )
+            lastSynthesisRequest = request
             synthesisTask?.cancel()
             isSynthesizing = true
             synthesisTask = Task { [weak self] in
@@ -387,9 +400,45 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         }
     }
 
+    func analyzeRobustness() {
+        robustDesignError = nil
+        robustDesignResult = nil
+        guard let request = lastSynthesisRequest, let synthesisResult else {
+            robustDesignError = "Synthesize a crossover before running robust-design analysis."
+            return
+        }
+        let options = RobustDesignOptions(
+            componentTolerancePercent: robustComponentTolerancePercent,
+            loadMagnitudeTolerancePercent: robustLoadTolerancePercent,
+            loadPhaseToleranceDegrees: robustLoadPhaseToleranceDegrees,
+            allowedMagnitudeErrorDecibels: robustAllowedErrorDecibels,
+            sampleCount: robustSampleCount
+        )
+        robustDesignTask?.cancel()
+        isAnalyzingRobustness = true
+        robustDesignTask = Task { [weak self] in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try RobustCrossoverDesigner.analyzeAndRefine(
+                        request: request, nominal: synthesisResult, options: options
+                    )
+                }.value
+                guard !Task.isCancelled else { return }
+                self?.robustDesignResult = result
+                self?.isAnalyzingRobustness = false
+            } catch is CancellationError {
+                self?.isAnalyzingRobustness = false
+            } catch {
+                self?.robustDesignError = error.localizedDescription
+                self?.isAnalyzingRobustness = false
+            }
+        }
+    }
+
     func applySynthesizedCrossover() {
         guard let synthesisResult else { return }
-        let generated = CrossoverSchematicSynthesizer.makeSchematic(from: synthesisResult)
+        let design = robustDesignResult?.recommendedDesign ?? synthesisResult
+        let generated = CrossoverSchematicSynthesizer.makeSchematic(from: design)
         schematic.restore(symbols: generated.symbols, wires: generated.wires)
         inputNetReference = generated.inputReference
         wooferOutputNetReference = generated.wooferOutputReference
