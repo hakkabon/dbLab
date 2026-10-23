@@ -1,12 +1,12 @@
 import Foundation
-import NumericCore
-import NumericCoreAccelerate
 import DBLabDomain
+import DBLabNumeric
 
 struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
     var warnings: [String]
     var trace: [CrossoverTracePoint]
+    var solverDiagnostics: [ACSolverDiagnostics]
 
     func domainResult(system: LoudspeakerSystem?) -> SystemSimulationResult? {
         guard let system, system.drivers.count >= 2 else { return nil }
@@ -36,7 +36,8 @@ struct CrossoverSimulationResult: Sendable {
             drivers: [wooferTrace, tweeterTrace],
             diagnostics: SimulationDiagnostics(
                 warnings: warnings,
-                backendIdentifier: "numeric-core-accelerate-lu"
+                relativeResiduals: solverDiagnostics.map(\.relativeResidual),
+                backendIdentifier: solverDiagnostics.first?.backendIdentifier ?? "numeric-core-sparse-lu"
             )
         )
     }
@@ -180,40 +181,43 @@ enum CrossoverNetworkSimulator {
             stop: bounds.upperBound,
             pointsPerOctave: pointsPerOctave
         )
-        let unknownNodeIDs = nets.map(\.id)
-            .filter { !groundNetIDs.contains($0) && $0 != inputNetID }
-            .sorted()
+        var elements = components.map { component in
+            ACTwoTerminalElement(
+                id: component.id,
+                firstNode: groundNetIDs.contains(component.firstNodeID) ? groundNet.id : component.firstNodeID,
+                secondNode: groundNetIDs.contains(component.secondNodeID) ? groundNet.id : component.secondNodeID,
+                impedance: component.model
+            )
+        }
+        elements.append(ACTwoTerminalElement(
+            id: "woofer-load", firstNode: wooferOutputNetID, secondNode: groundNet.id,
+            impedance: .tabulated(frequencies.map {
+                ACImpedanceSample(frequencyHz: $0, impedance: impedance(of: woofer.driver, measurement: wooferImpedance, frequencyHz: $0).acComplex)
+            })
+        ))
+        elements.append(ACTwoTerminalElement(
+            id: "tweeter-load", firstNode: tweeterOutputNetID, secondNode: groundNet.id,
+            impedance: .tabulated(frequencies.map {
+                ACImpedanceSample(frequencyHz: $0, impedance: impedance(of: tweeter.driver, measurement: tweeterImpedance, frequencyHz: $0).acComplex)
+            })
+        ))
+        let prepared = try PreparedACNetwork(ACNetwork(
+            referenceNode: groundNet.id,
+            sourceNode: inputNetID,
+            sourceVoltage: ACComplex(real: referenceVoltage),
+            elements: elements
+        ))
+        let solutions: [ACSolutionPoint]
+        do {
+            solutions = try prepared.solve(frequenciesHz: frequencies)
+        } catch ACAnalysisError.singularNetwork(let frequency) {
+            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequency)
+        }
         var points: [AcousticResponsePoint] = []
         var trace: [CrossoverTracePoint] = []
 
-        for frequency in frequencies {
-            try Task.checkCancellation()
-            var branches = components.map {
-                CircuitBranch(
-                    firstNodeID: groundNetIDs.contains($0.firstNodeID) ? groundNet.id : $0.firstNodeID,
-                    secondNodeID: groundNetIDs.contains($0.secondNodeID) ? groundNet.id : $0.secondNodeID,
-                    impedance: $0.impedance(at: frequency)
-                )
-            }
-            branches.append(CircuitBranch(
-                firstNodeID: wooferOutputNetID,
-                secondNodeID: groundNet.id,
-                impedance: impedance(of: woofer.driver, measurement: wooferImpedance, frequencyHz: frequency)
-            ))
-            branches.append(CircuitBranch(
-                firstNodeID: tweeterOutputNetID,
-                secondNodeID: groundNet.id,
-                impedance: impedance(of: tweeter.driver, measurement: tweeterImpedance, frequencyHz: frequency)
-            ))
-
-            let voltages = try solve(
-                branches: branches,
-                unknownNodeIDs: unknownNodeIDs,
-                inputNodeID: inputNetID,
-                groundNodeID: groundNet.id,
-                inputVoltage: referenceVoltage,
-                frequencyHz: frequency
-            )
+        for (frequency, solution) in zip(frequencies, solutions) {
+            let voltages = solution.nodeVoltages.mapValues(ComplexValue.init)
             guard let wooferVoltage = voltages[wooferOutputNetID],
                   let tweeterVoltage = voltages[tweeterOutputNetID] else {
                 throw CrossoverNetworkSimulationError.invalidNodeAssignment
@@ -239,21 +243,9 @@ enum CrossoverNetworkSimulator {
                 measurement: tweeterImpedance,
                 frequencyHz: frequency
             )
-            let inputCurrent = branches.reduce(ComplexValue(real: 0, imaginary: 0)) { total, branch in
-                if branch.firstNodeID == inputNetID {
-                    let other = voltages[branch.secondNodeID] ?? ComplexValue(real: 0, imaginary: 0)
-                    return total + (ComplexValue(real: referenceVoltage, imaginary: 0) - other) / branch.impedance
-                }
-                if branch.secondNodeID == inputNetID {
-                    let other = voltages[branch.firstNodeID] ?? ComplexValue(real: 0, imaginary: 0)
-                    return total + (ComplexValue(real: referenceVoltage, imaginary: 0) - other) / branch.impedance
-                }
-                return total
-            }
-            let inputImpedance = ComplexValue(real: referenceVoltage, imaginary: 0) / inputCurrent
             trace.append(CrossoverTracePoint(
                 frequencyHz: frequency,
-                inputImpedance: inputImpedance,
+                inputImpedance: ComplexValue(solution.inputImpedance),
                 wooferVoltage: wooferVoltage,
                 tweeterVoltage: tweeterVoltage,
                 wooferCurrent: wooferVoltage / wooferLoad,
@@ -289,7 +281,10 @@ enum CrossoverNetworkSimulator {
         if wooferFrequencyResponse?.hasPhaseData == false || tweeterFrequencyResponse?.hasPhaseData == false {
             warnings.append("A selected response dataset lacks phase; acoustic summation uses zero phase for that driver.")
         }
-        return CrossoverSimulationResult(response: points, warnings: warnings, trace: trace)
+        return CrossoverSimulationResult(
+            response: points, warnings: warnings, trace: trace,
+            solverDiagnostics: solutions.map(\.diagnostics)
+        )
     }
 
     private static func validateMeasurement(
@@ -364,6 +359,7 @@ enum CrossoverNetworkSimulator {
             case .resistor:
                 value = try positiveParameter("resistance", in: symbol)
                 branches.append(PassiveComponentBranch(
+                    id: symbol.refDes,
                     firstNodeID: firstNode,
                     secondNodeID: secondNode,
                     type: .resistor,
@@ -373,6 +369,7 @@ enum CrossoverNetworkSimulator {
             case .capacitor:
                 value = try positiveParameter("capacitance", in: symbol)
                 branches.append(PassiveComponentBranch(
+                    id: symbol.refDes,
                     firstNodeID: firstNode,
                     secondNodeID: secondNode,
                     type: .capacitor,
@@ -382,6 +379,7 @@ enum CrossoverNetworkSimulator {
             case .inductor:
                 value = try positiveParameter("inductance", in: symbol)
                 branches.append(PassiveComponentBranch(
+                    id: symbol.refDes,
                     firstNodeID: firstNode,
                     secondNodeID: secondNode,
                     type: .inductor,
@@ -395,6 +393,7 @@ enum CrossoverNetworkSimulator {
                     throw CrossoverNetworkSimulationError.invalidParameter(symbol.refDes)
                 }
                 branches.append(PassiveComponentBranch(
+                    id: symbol.refDes,
                     firstNodeID: firstNode,
                     secondNodeID: secondNode,
                     type: .inductor,
@@ -552,103 +551,6 @@ enum CrossoverNetworkSimulator {
         20 * log10(max(magnitude, 1e-12))
     }
 
-    private static func solve(
-        branches: [CircuitBranch],
-        unknownNodeIDs: [Int],
-        inputNodeID: Int,
-        groundNodeID: Int,
-        inputVoltage: Double,
-        frequencyHz: Double
-    ) throws -> [Int: ComplexValue] {
-        let indexByNode = Dictionary(uniqueKeysWithValues: unknownNodeIDs.enumerated().map { ($0.element, $0.offset) })
-        var matrix = Array(
-            repeating: Array(repeating: ComplexValue(real: 0, imaginary: 0), count: unknownNodeIDs.count),
-            count: unknownNodeIDs.count
-        )
-        var rhs = Array(repeating: ComplexValue(real: 0, imaginary: 0), count: unknownNodeIDs.count)
-
-        for branch in branches {
-            guard branch.impedance.magnitude.isFinite, branch.impedance.magnitude > 0 else {
-                throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-            }
-            let admittance = ComplexValue(real: 1, imaginary: 0) / branch.impedance
-            let firstIndex = indexByNode[branch.firstNodeID]
-            let secondIndex = indexByNode[branch.secondNodeID]
-
-            if let firstIndex {
-                matrix[firstIndex][firstIndex] = matrix[firstIndex][firstIndex] + admittance
-            }
-            if let secondIndex {
-                matrix[secondIndex][secondIndex] = matrix[secondIndex][secondIndex] + admittance
-            }
-            if let firstIndex, let secondIndex {
-                matrix[firstIndex][secondIndex] = matrix[firstIndex][secondIndex] - admittance
-                matrix[secondIndex][firstIndex] = matrix[secondIndex][firstIndex] - admittance
-            } else if branch.firstNodeID == inputNodeID, let secondIndex {
-                rhs[secondIndex] = rhs[secondIndex] + admittance * inputVoltage
-            } else if branch.secondNodeID == inputNodeID, let firstIndex {
-                rhs[firstIndex] = rhs[firstIndex] + admittance * inputVoltage
-            }
-        }
-
-        let solution = try gaussianSolve(matrix: matrix, rhs: rhs, frequencyHz: frequencyHz)
-        var voltages = Dictionary(uniqueKeysWithValues: zip(unknownNodeIDs, solution))
-        voltages[inputNodeID] = ComplexValue(real: inputVoltage, imaginary: 0)
-        voltages[groundNodeID] = ComplexValue(real: 0, imaginary: 0)
-        return voltages
-    }
-
-    private static func gaussianSolve(
-        matrix: [[ComplexValue]],
-        rhs: [ComplexValue],
-        frequencyHz: Double
-    ) throws -> [ComplexValue] {
-        let size = rhs.count
-        guard size > 0 else { return [] }
-        guard matrix.count == size, matrix.allSatisfy({ $0.count == size }) else {
-            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-        }
-
-        // NumericCore currently exposes real-valued dense LU. Map A·z=b to
-        // the equivalent 2N real block system [Re(A) -Im(A); Im(A) Re(A)].
-        // This keeps matrix factorization and its numerical diagnostics in the
-        // shared numerical core while preserving arbitrary measured impedances.
-        let realSystem = (0..<(2 * size)).map { row in
-            (0..<(2 * size)).map { column -> Double in
-                switch (row < size, column < size) {
-                case (true, true): matrix[row][column].real
-                case (true, false): -matrix[row][column - size].imaginary
-                case (false, true): matrix[row - size][column].imaginary
-                case (false, false): matrix[row - size][column - size].real
-                }
-            }
-        }
-        let realRHS = rhs.map(\.real) + rhs.map(\.imaginary)
-
-        do {
-            let numericMatrix = try Matrix<Double>(rows: realSystem)
-            let report = try AccelerateBackend.solveLUReport(
-                numericMatrix,
-                Vector(realRHS)
-            )
-            guard report.termination == .converged,
-                  let values = report.solution?.storage,
-                  values.count == 2 * size else {
-                throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-            }
-            let solution = (0..<size).map {
-                ComplexValue(real: values[$0], imaginary: values[$0 + size])
-            }
-            guard solution.allSatisfy({ $0.real.isFinite && $0.imaginary.isFinite }) else {
-                throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-            }
-            return solution
-        } catch is CrossoverNetworkSimulationError {
-            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-        } catch {
-            throw CrossoverNetworkSimulationError.singularNetwork(frequencyHz: frequencyHz)
-        }
-    }
 }
 
 private struct PassiveComponentBranch {
@@ -658,27 +560,29 @@ private struct PassiveComponentBranch {
         case inductor
     }
 
+    let id: String
     let firstNodeID: Int
     let secondNodeID: Int
     let type: Kind
     let value: Double
     let seriesResistance: Double
 
-    func impedance(at frequencyHz: Double) -> ComplexValue {
-        let angularFrequency = 2 * Double.pi * frequencyHz
+    var model: ACImpedanceModel {
         switch type {
         case .resistor:
-            return ComplexValue(real: value, imaginary: 0)
+            return .resistance(value)
         case .capacitor:
-            return ComplexValue(real: 0, imaginary: -1 / (angularFrequency * value))
+            return .capacitance(value)
         case .inductor:
-            return ComplexValue(real: seriesResistance, imaginary: angularFrequency * value)
+            return .inductance(henries: value, seriesResistance: seriesResistance)
         }
     }
 }
 
-private struct CircuitBranch {
-    let firstNodeID: Int
-    let secondNodeID: Int
-    let impedance: ComplexValue
+private extension ComplexValue {
+    init(_ value: ACComplex) {
+        self.init(real: value.real, imaginary: value.imaginary)
+    }
+
+    var acComplex: ACComplex { ACComplex(real: real, imaginary: imaginary) }
 }
