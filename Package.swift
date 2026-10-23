@@ -28,8 +28,7 @@ let package = Package(
     // ── Dependencies ─────────────────────────────────────────────────────────
     dependencies: [
         .package(
-            url: "https://github.com/hakkabon/Swift-NumericCore.git",
-            revision: "7318e8c470079b5255142d223750c251e9b2cfe7"
+            url: "https://github.com/hakkabon/Swift-NumericCore.git", exact: "1.1.0"
         ),
     ],
 
