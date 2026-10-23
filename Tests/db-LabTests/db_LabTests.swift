@@ -219,9 +219,12 @@ import Testing
         tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0)
     )
 
-    // The test topology has an 8 Ω series element. A resonance peak in the
-    // load therefore produces visibly less attenuation near Fs than at 20 Hz.
-    let resonance = try #require(result.response.min { abs($0.frequencyHz - 50) < abs($1.frequencyHz - 50) })
+    // The sealed box raises resonance by sqrt(1 + Vas/Vb). The test topology
+    // has an 8 Ω series element, so the load peak reduces attenuation there.
+    let sealedResonance = driver.fsHz * sqrt(1 + driver.vasLiters / 30)
+    let resonance = try #require(result.response.min {
+        abs($0.frequencyHz - sealedResonance) < abs($1.frequencyHz - sealedResonance)
+    })
     let low = try #require(result.response.first)
     #expect(resonance.wooferDb > low.wooferDb + 3)
 }
@@ -236,7 +239,9 @@ import Testing
         woofer: driver,
         tweeter: driver,
         wooferFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 0),
-        tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 180)
+        tweeterFrequencyResponse: flatResponseMeasurement(levelDb: 80, phaseDegrees: 180),
+        wooferImpedance: impedanceMeasurement(magnitude: 8),
+        tweeterImpedance: impedanceMeasurement(magnitude: 8)
     )
 
     let point = try #require(result.response.first)

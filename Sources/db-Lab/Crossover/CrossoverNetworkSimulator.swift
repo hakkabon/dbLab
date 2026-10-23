@@ -1,6 +1,7 @@
 import Foundation
 import DBLabDomain
 import DBLabNumeric
+import DBLabEnclosure
 
 struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
@@ -19,13 +20,19 @@ struct CrossoverSimulationResult: Sendable {
             driverInstanceID: woofer.id,
             terminalVoltage: trace.map { sample($0.frequencyHz, $0.wooferVoltage) },
             current: trace.map { sample($0.frequencyHz, $0.wooferCurrent) },
-            acousticPressure: trace.map { sample($0.frequencyHz, $0.wooferAcoustic) }
+            acousticPressure: trace.map { sample($0.frequencyHz, $0.wooferAcoustic) },
+            excursionMillimeters: trace.map(\.wooferExcursionMillimeters),
+            portAirVelocityMetersPerSecond: trace.compactMap(\.wooferPortVelocity).isEmpty
+                ? nil : trace.compactMap(\.wooferPortVelocity)
         )
         let tweeterTrace = DriverSimulationTrace(
             driverInstanceID: tweeter.id,
             terminalVoltage: trace.map { sample($0.frequencyHz, $0.tweeterVoltage) },
             current: trace.map { sample($0.frequencyHz, $0.tweeterCurrent) },
-            acousticPressure: trace.map { sample($0.frequencyHz, $0.tweeterAcoustic) }
+            acousticPressure: trace.map { sample($0.frequencyHz, $0.tweeterAcoustic) },
+            excursionMillimeters: trace.map(\.tweeterExcursionMillimeters),
+            portAirVelocityMetersPerSecond: trace.compactMap(\.tweeterPortVelocity).isEmpty
+                ? nil : trace.compactMap(\.tweeterPortVelocity)
         )
         return SystemSimulationResult(
             frequenciesHz: trace.map(\.frequencyHz),
@@ -52,6 +59,10 @@ struct CrossoverTracePoint: Sendable {
     let tweeterCurrent: ComplexValue
     let wooferAcoustic: ComplexValue
     let tweeterAcoustic: ComplexValue
+    let wooferExcursionMillimeters: Double
+    let tweeterExcursionMillimeters: Double
+    let wooferPortVelocity: Double?
+    let tweeterPortVelocity: Double?
 }
 
 enum CrossoverNetworkSimulationError: LocalizedError {
@@ -181,6 +192,14 @@ enum CrossoverNetworkSimulator {
             stop: bounds.upperBound,
             pointsPerOctave: pointsPerOctave
         )
+        let wooferEnclosureModel: EnclosureModel
+        let tweeterEnclosureModel: EnclosureModel
+        do {
+            wooferEnclosureModel = try AcousticSimulator.enclosureModel(for: woofer)
+            tweeterEnclosureModel = try AcousticSimulator.enclosureModel(for: tweeter)
+        } catch {
+            throw CrossoverNetworkSimulationError.invalidParameter("Enclosure model")
+        }
         var elements = components.map { component in
             ACTwoTerminalElement(
                 id: component.id,
@@ -192,13 +211,23 @@ enum CrossoverNetworkSimulator {
         elements.append(ACTwoTerminalElement(
             id: "woofer-load", firstNode: wooferOutputNetID, secondNode: groundNet.id,
             impedance: .tabulated(frequencies.map {
-                ACImpedanceSample(frequencyHz: $0, impedance: impedance(of: woofer.driver, measurement: wooferImpedance, frequencyHz: $0).acComplex)
+                ACImpedanceSample(
+                    frequencyHz: $0,
+                    impedance: loadImpedance(
+                        measurement: wooferImpedance, enclosureModel: wooferEnclosureModel, frequencyHz: $0
+                    ).acComplex
+                )
             })
         ))
         elements.append(ACTwoTerminalElement(
             id: "tweeter-load", firstNode: tweeterOutputNetID, secondNode: groundNet.id,
             impedance: .tabulated(frequencies.map {
-                ACImpedanceSample(frequencyHz: $0, impedance: impedance(of: tweeter.driver, measurement: tweeterImpedance, frequencyHz: $0).acComplex)
+                ACImpedanceSample(
+                    frequencyHz: $0,
+                    impedance: loadImpedance(
+                        measurement: tweeterImpedance, enclosureModel: tweeterEnclosureModel, frequencyHz: $0
+                    ).acComplex
+                )
             })
         ))
         let prepared = try PreparedACNetwork(ACNetwork(
@@ -233,16 +262,16 @@ enum CrossoverNetworkSimulator {
                 measurement: tweeterFrequencyResponse,
                 frequencyHz: frequency
             ) * (tweeterVoltage / ComplexValue(real: referenceVoltage, imaginary: 0))
-            let wooferLoad = impedance(
-                of: woofer.driver,
-                measurement: wooferImpedance,
-                frequencyHz: frequency
+            let wooferLoad = loadImpedance(
+                measurement: wooferImpedance, enclosureModel: wooferEnclosureModel, frequencyHz: frequency
             )
-            let tweeterLoad = impedance(
-                of: tweeter.driver,
-                measurement: tweeterImpedance,
-                frequencyHz: frequency
+            let tweeterLoad = loadImpedance(
+                measurement: tweeterImpedance, enclosureModel: tweeterEnclosureModel, frequencyHz: frequency
             )
+            let wooferEnclosureResponse = try wooferEnclosureModel.response(at: frequency)
+            let tweeterEnclosureResponse = try tweeterEnclosureModel.response(at: frequency)
+            let wooferVoltageAC = wooferVoltage.acComplex
+            let tweeterVoltageAC = tweeterVoltage.acComplex
             trace.append(CrossoverTracePoint(
                 frequencyHz: frequency,
                 inputImpedance: ComplexValue(solution.inputImpedance),
@@ -251,7 +280,11 @@ enum CrossoverNetworkSimulator {
                 wooferCurrent: wooferVoltage / wooferLoad,
                 tweeterCurrent: tweeterVoltage / tweeterLoad,
                 wooferAcoustic: wooferAcoustic,
-                tweeterAcoustic: tweeterAcoustic
+                tweeterAcoustic: tweeterAcoustic,
+                wooferExcursionMillimeters: (wooferEnclosureResponse.coneDisplacementMetersPerVolt * wooferVoltageAC).magnitude * sqrt(2) * 1_000,
+                tweeterExcursionMillimeters: (tweeterEnclosureResponse.coneDisplacementMetersPerVolt * tweeterVoltageAC).magnitude * sqrt(2) * 1_000,
+                wooferPortVelocity: wooferEnclosureResponse.portAirVelocityMetersPerSecondPerVolt.map { ($0 * wooferVoltageAC).magnitude * sqrt(2) },
+                tweeterPortVelocity: tweeterEnclosureResponse.portAirVelocityMetersPerSecondPerVolt.map { ($0 * tweeterVoltageAC).magnitude * sqrt(2) }
             ))
             points.append(AcousticResponsePoint(
                 frequencyHz: frequency,
@@ -273,13 +306,26 @@ enum CrossoverNetworkSimulator {
             warnings.append("A driver has no selected measured response; its enclosure model estimates acoustic output.")
         }
         if wooferImpedance == nil || tweeterImpedance == nil {
-            warnings.append("A driver has no selected measured impedance; a Thiele/Small motional-impedance model estimates the load.")
+            warnings.append("A driver has no selected measured impedance; its Thiele/Small enclosure model supplies the complex electrical load.")
         }
         if wooferImpedance?.hasPhaseData == false || tweeterImpedance?.hasPhaseData == false {
             warnings.append("A selected impedance dataset lacks phase; that driver's load is treated as purely resistive between samples.")
         }
         if wooferFrequencyResponse?.hasPhaseData == false || tweeterFrequencyResponse?.hasPhaseData == false {
             warnings.append("A selected response dataset lacks phase; acoustic summation uses zero phase for that driver.")
+        }
+        if trace.contains(where: { $0.wooferExcursionMillimeters > woofer.driver.xmaxMillimeters }) {
+            warnings.append("Woofer excursion exceeds its linear Xmax at one or more simulated frequencies.")
+        }
+        if trace.contains(where: { $0.tweeterExcursionMillimeters > tweeter.driver.xmaxMillimeters }) {
+            warnings.append("Tweeter excursion exceeds its linear Xmax at one or more simulated frequencies.")
+        }
+        let portWarningThreshold = 0.1 * 343.0
+        if trace.contains(where: { ($0.wooferPortVelocity ?? 0) > portWarningThreshold }) {
+            warnings.append("Woofer vent air speed exceeds Mach 0.10; increase vent area or reconsider tuning.")
+        }
+        if trace.contains(where: { ($0.tweeterPortVelocity ?? 0) > portWarningThreshold }) {
+            warnings.append("Tweeter vent air speed exceeds Mach 0.10; increase vent area or reconsider tuning.")
         }
         return CrossoverSimulationResult(
             response: points, warnings: warnings, trace: trace,
@@ -414,34 +460,18 @@ enum CrossoverNetworkSimulator {
         return value
     }
 
-    private static func impedance(
-        of driver: SpeakerDriver,
+    private static func loadImpedance(
         measurement: DriverMeasurement?,
+        enclosureModel: EnclosureModel,
         frequencyHz: Double
     ) -> ComplexValue {
         if let measurement, let value = interpolatedComplex(measurement, frequencyHz: frequencyHz) {
             return value
         }
-        let electrical = ComplexValue(
-            real: driver.reOhms,
-            imaginary: 2 * Double.pi * frequencyHz * driver.leMilliHenries / 1_000
-        )
-        // The available Fs/Qes/Qms/Re parameters are sufficient to express
-        // the classic motional impedance in normalized form without inventing
-        // Mms, Cms, Rms, or Bl individually:
-        //   Zm = Re*(Qms/Qes) / (1 + j*Qms*(f/Fs - Fs/f))
-        // This restores the resonance peak that materially loads passive
-        // crossovers. Imported ZMA remains the preferred source of truth.
-        let normalizedDetuning = frequencyHz / driver.fsHz - driver.fsHz / frequencyHz
-        let mechanicalDenominator = ComplexValue(
-            real: 1,
-            imaginary: driver.qms * normalizedDetuning
-        )
-        let motional = ComplexValue(
-            real: driver.reOhms * driver.qms / driver.qes,
-            imaginary: 0
-        ) / mechanicalDenominator
-        return electrical + motional
+        guard let response = try? enclosureModel.response(at: frequencyHz) else {
+            return ComplexValue(real: .nan, imaginary: .nan)
+        }
+        return ComplexValue(response.electricalImpedance)
     }
 
     private static func acousticResponse(

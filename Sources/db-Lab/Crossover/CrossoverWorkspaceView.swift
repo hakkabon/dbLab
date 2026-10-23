@@ -92,6 +92,7 @@ struct CrossoverWorkspaceView: View {
 
                 if !document.acousticResponse.isEmpty {
                     responsePlot
+                    operatingLimitsPlot
                 }
             }
             .padding(24)
@@ -329,6 +330,64 @@ struct CrossoverWorkspaceView: View {
         }
     }
 
+    @ViewBuilder
+    private var operatingLimitsPlot: some View {
+        if let result = document.systemSimulationResult {
+            let excursionPoints = result.drivers.enumerated().flatMap { driverIndex, trace in
+                zip(result.frequenciesHz, trace.excursionMillimeters ?? []).map {
+                    EnclosureLimitPoint(
+                        frequencyHz: $0.0, value: $0.1,
+                        series: driverIndex == 0 ? "Woofer" : "Tweeter"
+                    )
+                }
+            }
+            let ventPoints = result.drivers.enumerated().flatMap { driverIndex, trace in
+                zip(result.frequenciesHz, trace.portAirVelocityMetersPerSecond ?? []).map {
+                    EnclosureLimitPoint(
+                        frequencyHz: $0.0, value: $0.1,
+                        series: driverIndex == 0 ? "Woofer vent" : "Tweeter vent"
+                    )
+                }
+            }
+            GroupBox("Enclosure operating limits") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Small-signal cone peak displacement and vent air speed at the solved terminal voltage. Compare excursion against each driver's Xmax; vent speeds above Mach 0.10 are flagged.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Chart(excursionPoints) { point in
+                        LineMark(
+                            x: .value("Frequency (Hz)", point.frequencyHz),
+                            y: .value("Excursion (mm)", point.value),
+                            series: .value("Driver", point.series)
+                        )
+                    }
+                    .chartXScale(type: .log)
+                    .chartXAxisLabel("Frequency (Hz)")
+                    .chartYAxisLabel("Peak excursion (mm)")
+                    .frame(height: 220)
+                    if !ventPoints.isEmpty {
+                        Chart {
+                            ForEach(ventPoints) { point in
+                                LineMark(
+                                    x: .value("Frequency (Hz)", point.frequencyHz),
+                                    y: .value("Air speed (m/s)", point.value),
+                                    series: .value("Vent", point.series)
+                                )
+                            }
+                            RuleMark(y: .value("Mach 0.10", 34.3))
+                                .foregroundStyle(.red.opacity(0.7))
+                                .lineStyle(StrokeStyle(dash: [5, 4]))
+                        }
+                        .chartXScale(type: .log)
+                        .chartXAxisLabel("Frequency (Hz)")
+                        .chartYAxisLabel("Vent air speed (m/s)")
+                        .frame(height: 180)
+                    }
+                }
+            }
+        }
+    }
+
     private func numericSetting(_ title: String, unit: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.caption).foregroundStyle(.secondary)
@@ -340,4 +399,11 @@ struct CrossoverWorkspaceView: View {
             }
         }
     }
+}
+
+private struct EnclosureLimitPoint: Identifiable {
+    let id = UUID()
+    let frequencyHz: Double
+    let value: Double
+    let series: String
 }

@@ -357,10 +357,12 @@ public struct DriverSimulationTrace: Codable, Hashable, Identifiable, Sendable {
     public let current: [ComplexTraceSample]
     public let acousticPressure: [ComplexTraceSample]
     public let excursionMillimeters: [Double]?
+    public let portAirVelocityMetersPerSecond: [Double]?
     public init(
         id: UUID = UUID(), driverInstanceID: UUID,
         terminalVoltage: [ComplexTraceSample], current: [ComplexTraceSample],
-        acousticPressure: [ComplexTraceSample], excursionMillimeters: [Double]? = nil
+        acousticPressure: [ComplexTraceSample], excursionMillimeters: [Double]? = nil,
+        portAirVelocityMetersPerSecond: [Double]? = nil
     ) {
         self.id = id
         self.driverInstanceID = driverInstanceID
@@ -368,6 +370,7 @@ public struct DriverSimulationTrace: Codable, Hashable, Identifiable, Sendable {
         self.current = current
         self.acousticPressure = acousticPressure
         self.excursionMillimeters = excursionMillimeters
+        self.portAirVelocityMetersPerSecond = portAirVelocityMetersPerSecond
     }
 }
 

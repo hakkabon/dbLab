@@ -1,4 +1,7 @@
 import Foundation
+import DBLabDomain
+import DBLabEnclosure
+import DBLabNumeric
 
 enum EnclosureType: String, CaseIterable, Identifiable, Codable, Sendable {
     case openBaffle = "Open baffle"
@@ -28,6 +31,18 @@ struct AcousticBranchSettings: Sendable {
     let portDiameterCentimeters: Double
     let baffleWidthMeters: Double
     let band: DriverBand
+
+    var domainEnclosure: EnclosureConfiguration {
+        switch enclosure {
+        case .openBaffle: .openBaffle(widthMeters: baffleWidthMeters)
+        case .closedBox: .sealed(netVolumeLiters: boxVolumeLiters)
+        case .portedBox: .vented(
+            netVolumeLiters: boxVolumeLiters,
+            tuningHz: portTuningHz,
+            portDiameterCentimeters: portDiameterCentimeters
+        )
+        }
+    }
 }
 
 struct AcousticResponsePoint: Identifiable, Sendable {
@@ -64,10 +79,11 @@ enum PortedBoxDesign {
               diameterCentimeters.isFinite, diameterCentimeters > 0 else {
             return nil
         }
-        let length = 23_562.5 * diameterCentimeters * diameterCentimeters
-            / (tuningHz * tuningHz * volumeLiters)
-            - 0.732 * diameterCentimeters
-        return length.isFinite && length > 0 ? length : nil
+        return EnclosureModel.portLengthCentimeters(
+            volumeLiters: volumeLiters,
+            tuningHz: tuningHz,
+            diameterCentimeters: diameterCentimeters
+        )
     }
 }
 
@@ -158,40 +174,23 @@ enum AcousticSimulator {
         _ branch: AcousticBranchSettings,
         frequencyHz: Double
     ) -> ComplexValue {
-        let driver = branch.driver
-        let s = ComplexValue(real: 0, imaginary: frequencyHz / driver.fsHz)
-        let s2 = s * s
-        let alpha = driver.vasLiters / max(branch.boxVolumeLiters, 0.001)
-        let enclosure: ComplexValue
-
-        switch branch.enclosure {
-        case .openBaffle:
-            let freeAirDenominator = s2 + s * (1 / driver.qts)
-                + ComplexValue(real: 1, imaginary: 0)
-            let freeAir = s2 / freeAirDenominator
-            let dipoleCorner = 343 / (2 * Double.pi * 2 * branch.baffleWidthMeters)
-            let dipole = ComplexValue(real: 0, imaginary: frequencyHz / dipoleCorner)
-                / ComplexValue(real: 1, imaginary: frequencyHz / dipoleCorner)
-            enclosure = freeAir * dipole
-        case .closedBox:
-            let denominator = s2 + s * (1 / driver.qts)
-                + ComplexValue(real: 1 + alpha, imaginary: 0)
-            enclosure = s2 / denominator
-        case .portedBox:
-            let tuningRatio = branch.portTuningHz / driver.fsHz
-            let s3 = s2 * s
-            let s4 = s2 * s2
-            var denominator = s4
-            denominator = denominator + s3 * (1 / driver.qts)
-            denominator = denominator + s2 * (1 + alpha + tuningRatio * tuningRatio)
-            denominator = denominator + s * (tuningRatio * tuningRatio / driver.qts)
-            denominator = denominator + ComplexValue(
-                real: tuningRatio * tuningRatio,
-                imaginary: 0
-            )
-            enclosure = s4 / denominator
+        guard let response = try? enclosureModel(for: branch).response(at: frequencyHz) else {
+            return ComplexValue(real: 0, imaginary: 0)
         }
-        return enclosure * pow(10, driver.sensitivityDb / 20)
+        return ComplexValue(response.acousticPressurePascalsPerVolt) * (2.83 / 20e-6)
+    }
+
+    static func enclosureModel(for branch: AcousticBranchSettings) throws -> EnclosureModel {
+        try EnclosureModel(
+            driver: EnclosureDriverParameters(
+                fsHz: branch.driver.fsHz, qes: branch.driver.qes, qms: branch.driver.qms,
+                vasLiters: branch.driver.vasLiters, reOhms: branch.driver.reOhms,
+                leMilliHenries: branch.driver.leMilliHenries,
+                sdSquareCentimeters: branch.driver.sdSquareCentimeters,
+                xmaxMillimeters: branch.driver.xmaxMillimeters
+            ),
+            enclosure: branch.domainEnclosure
+        )
     }
 
     private static func branchResponse(
@@ -297,5 +296,11 @@ struct ComplexValue: Sendable {
             real: (lhs.real * rhs.real + lhs.imaginary * rhs.imaginary) / denominator,
             imaginary: (lhs.imaginary * rhs.real - lhs.real * rhs.imaginary) / denominator
         )
+    }
+}
+
+private extension ComplexValue {
+    init(_ value: ACComplex) {
+        self.init(real: value.real, imaginary: value.imaginary)
     }
 }
