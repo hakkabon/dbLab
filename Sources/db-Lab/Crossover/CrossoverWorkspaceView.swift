@@ -99,6 +99,7 @@ struct CrossoverWorkspaceView: View {
                     responsePlot
                     spatialAcousticsPlots
                     operatingLimitsPlot
+                    largeSignalPanel
                 }
             }
             .padding(24)
@@ -735,6 +736,103 @@ struct CrossoverWorkspaceView: View {
         }
     }
 
+    private var largeSignalPanel: some View {
+        GroupBox("Large-signal and multiphysics") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Sweep input level from the 2.83 V NumericCore operating point. The model iterates voice-coil temperature and resistance, then estimates motor/compliance nonlinearity, excursion, distortion, and vent compression.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)],
+                    alignment: .leading, spacing: 10
+                ) {
+                    numericSetting("Maximum input", unit: "V RMS", value: $document.largeSignalMaximumVoltageRMS)
+                    Stepper("Sweep points: \(document.largeSignalSteps)", value: $document.largeSignalSteps, in: 2...16)
+                    numericSetting("Stimulus duration", unit: "s", value: $document.largeSignalDurationSeconds)
+                    numericSetting("Coil thermal resistance", unit: "K/W", value: $document.thermalResistanceKelvinPerWatt)
+                    numericSetting("Thermal time constant", unit: "s", value: $document.thermalTimeConstantSeconds)
+                    numericSetting("Maximum coil temperature", unit: "°C", value: $document.maximumCoilTemperatureCelsius)
+                }
+                Button {
+                    document.analyzeLargeSignal()
+                } label: {
+                    if document.isAnalyzingLargeSignal {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Run large-signal sweep", systemImage: "thermometer.high")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(document.isAnalyzingLargeSignal || document.systemSimulationResult == nil)
+                if let error = document.largeSignalError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
+                if let result = document.largeSignalResult {
+                    HStack(spacing: 18) {
+                        Text("Safe input: \(result.maximumSafeInputVoltageRMS.formatted(.number.precision(.fractionLength(2)))) V")
+                        Text("Safe nominal power: \(result.maximumSafeNominalPowerWatts.formatted(.number.precision(.fractionLength(1)))) W")
+                        Text("First limit: \(result.firstLimitingMechanism.rawValue)")
+                    }
+                    .font(.caption.monospacedDigit())
+                    Chart(result.operatingPoints) { point in
+                        LineMark(
+                            x: .value("Input", point.inputVoltageRMS),
+                            y: .value("Compression", point.maximumCompressionDecibels)
+                        )
+                        PointMark(
+                            x: .value("Input", point.inputVoltageRMS),
+                            y: .value("Compression", point.maximumCompressionDecibels)
+                        )
+                        .foregroundStyle(point.limitingMechanism == .none ? .blue : .red)
+                    }
+                    .chartXAxisLabel("Input voltage (V RMS)")
+                    .chartYAxisLabel("Maximum compression (dB)")
+                    .frame(height: 210)
+                    Chart {
+                        ForEach(result.operatingPoints) { point in
+                            ForEach(Array(point.drivers.enumerated()), id: \.offset) { index, driver in
+                                LineMark(
+                                    x: .value("Input", point.inputVoltageRMS),
+                                    y: .value("Temperature", driver.coilTemperatureCelsius),
+                                    series: .value("Driver", index == 0 ? "Woofer" : "Tweeter")
+                                )
+                            }
+                        }
+                        RuleMark(y: .value("Limit", document.maximumCoilTemperatureCelsius))
+                            .foregroundStyle(.red.opacity(0.7))
+                            .lineStyle(StrokeStyle(dash: [5, 4]))
+                    }
+                    .chartXAxisLabel("Input voltage (V RMS)")
+                    .chartYAxisLabel("Voice-coil temperature (°C)")
+                    .frame(height: 210)
+                    if let highest = result.operatingPoints.last {
+                        let frequencyPoints = highest.drivers.enumerated().flatMap { driverIndex, driver in
+                            driver.response.map {
+                                LargeSignalChartPoint(
+                                    frequencyHz: $0.frequencyHz,
+                                    value: $0.estimatedTHDPercent,
+                                    series: driverIndex == 0 ? "Woofer" : "Tweeter"
+                                )
+                            }
+                        }
+                        Chart(frequencyPoints) { point in
+                            LineMark(
+                                x: .value("Frequency", point.frequencyHz),
+                                y: .value("THD", point.value),
+                                series: .value("Driver", point.series)
+                            )
+                        }
+                        .chartXScale(type: .log)
+                        .chartXAxisLabel("Frequency (Hz) at \(highest.inputVoltageRMS.formatted(.number.precision(.fractionLength(1)))) V")
+                        .chartYAxisLabel("Estimated THD (%)")
+                        .frame(height: 210)
+                    }
+                }
+            }
+        }
+    }
+
     private func numericSetting(_ title: String, unit: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.caption).foregroundStyle(.secondary)
@@ -749,6 +847,13 @@ struct CrossoverWorkspaceView: View {
 }
 
 private struct EnclosureLimitPoint: Identifiable {
+    let id = UUID()
+    let frequencyHz: Double
+    let value: Double
+    let series: String
+}
+
+private struct LargeSignalChartPoint: Identifiable {
     let id = UUID()
     let frequencyHz: Double
     let value: Double

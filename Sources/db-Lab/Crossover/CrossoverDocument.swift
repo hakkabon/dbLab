@@ -3,6 +3,7 @@ import Combine
 import DBLabDomain
 import DBLabSynthesis
 import DBLabAcoustics
+import DBLabMultiphysics
 
 @MainActor
 final class CrossoverDocument: ObservableObject, Identifiable {
@@ -65,10 +66,20 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var floorReflectionCoefficient = 0.0
     @Published var airAbsorptionDbPerMeterAt10kHz = 0.0
     @Published var spatialAcousticsResult: SpatialAcousticsResult?
+    @Published var largeSignalMaximumVoltageRMS = 32.0
+    @Published var largeSignalSteps = 6
+    @Published var largeSignalDurationSeconds = 60.0
+    @Published var thermalResistanceKelvinPerWatt = 2.5
+    @Published var thermalTimeConstantSeconds = 45.0
+    @Published var maximumCoilTemperatureCelsius = 180.0
+    @Published var largeSignalResult: LargeSignalResult?
+    @Published var largeSignalError: String?
+    @Published var isAnalyzingLargeSignal = false
     private var schematicSubscription: AnyCancellable?
     private var simulationTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
     private var robustDesignTask: Task<Void, Never>?
+    private var largeSignalTask: Task<Void, Never>?
     private var lastSynthesisRequest: CrossoverSynthesisRequest?
 
     init() {
@@ -113,6 +124,12 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         acousticCenterHeightMeters = snapshot.acousticCenterHeightMeters ?? 1
         floorReflectionCoefficient = snapshot.floorReflectionCoefficient ?? 0
         airAbsorptionDbPerMeterAt10kHz = snapshot.airAbsorptionDbPerMeterAt10kHz ?? 0
+        largeSignalMaximumVoltageRMS = snapshot.largeSignalMaximumVoltageRMS ?? 32
+        largeSignalSteps = snapshot.largeSignalSteps ?? 6
+        largeSignalDurationSeconds = snapshot.largeSignalDurationSeconds ?? 60
+        thermalResistanceKelvinPerWatt = snapshot.thermalResistanceKelvinPerWatt ?? 2.5
+        thermalTimeConstantSeconds = snapshot.thermalTimeConstantSeconds ?? 45
+        maximumCoilTemperatureCelsius = snapshot.maximumCoilTemperatureCelsius ?? 180
         schematic.restore(symbols: snapshot.symbols, wires: snapshot.wires)
         inputNetReference = snapshot.inputNetReference ?? netReference(for: snapshot.inputNetID)
         wooferOutputNetReference = snapshot.wooferOutputNetReference ?? netReference(for: snapshot.wooferOutputNetID)
@@ -164,6 +181,12 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             acousticCenterHeightMeters: acousticCenterHeightMeters,
             floorReflectionCoefficient: floorReflectionCoefficient,
             airAbsorptionDbPerMeterAt10kHz: airAbsorptionDbPerMeterAt10kHz,
+            largeSignalMaximumVoltageRMS: largeSignalMaximumVoltageRMS,
+            largeSignalSteps: largeSignalSteps,
+            largeSignalDurationSeconds: largeSignalDurationSeconds,
+            thermalResistanceKelvinPerWatt: thermalResistanceKelvinPerWatt,
+            thermalTimeConstantSeconds: thermalTimeConstantSeconds,
+            maximumCoilTemperatureCelsius: maximumCoilTemperatureCelsius,
             symbols: schematic.symbols,
             wires: schematic.wires
         )
@@ -293,6 +316,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         acousticResponse = []
         systemSimulationResult = nil
         spatialAcousticsResult = nil
+        largeSignalResult = nil
+        largeSignalError = nil
         guard let wooferID = wooferDriverID,
               let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
                 ?? library.drivers.first(where: { $0.id == wooferID }) else {
@@ -509,6 +534,56 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         acousticResponse = []
         systemSimulationResult = nil
         spatialAcousticsResult = nil
+        largeSignalResult = nil
+    }
+
+    func analyzeLargeSignal() {
+        largeSignalError = nil
+        largeSignalResult = nil
+        guard let smallSignal = systemSimulationResult, let system = domainSystem else {
+            largeSignalError = "Run the electrical and acoustic simulation before large-signal analysis."
+            return
+        }
+        guard largeSignalSteps >= 2, largeSignalMaximumVoltageRMS.isFinite,
+              largeSignalMaximumVoltageRMS >= 2.83 else {
+            largeSignalError = "Maximum voltage must be at least 2.83 V and the sweep needs two or more steps."
+            return
+        }
+        let ratio = pow(largeSignalMaximumVoltageRMS / 2.83, 1 / Double(largeSignalSteps - 1))
+        let voltages = (0..<largeSignalSteps).map { 2.83 * pow(ratio, Double($0)) }
+        let parameters = system.drivers.map {
+            LargeSignalDriverParameters(
+                driverInstanceID: $0.id,
+                dcResistanceOhms: $0.driverRevision.reOhms,
+                xmaxMillimeters: $0.driverRevision.xmaxMillimeters,
+                thermalResistanceKelvinPerWatt: thermalResistanceKelvinPerWatt,
+                thermalTimeConstantSeconds: thermalTimeConstantSeconds,
+                maximumCoilTemperatureCelsius: maximumCoilTemperatureCelsius
+            )
+        }
+        let options = LargeSignalOptions(
+            inputVoltagesRMS: voltages,
+            stimulusDurationSeconds: largeSignalDurationSeconds
+        )
+        largeSignalTask?.cancel()
+        isAnalyzingLargeSignal = true
+        largeSignalTask = Task { [weak self] in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try LargeSignalSimulator.simulate(
+                        smallSignal: smallSignal, drivers: parameters, options: options
+                    )
+                }.value
+                guard !Task.isCancelled else { return }
+                self?.largeSignalResult = result
+                self?.isAnalyzingLargeSignal = false
+            } catch is CancellationError {
+                self?.isAnalyzingLargeSignal = false
+            } catch {
+                self?.largeSignalError = error.localizedDescription
+                self?.isAnalyzingLargeSignal = false
+            }
+        }
     }
 
     private func measurement(

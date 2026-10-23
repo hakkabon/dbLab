@@ -44,6 +44,12 @@ struct CrossoverProjectSnapshot: Codable, Identifiable {
     var acousticCenterHeightMeters: Double? = nil
     var floorReflectionCoefficient: Double? = nil
     var airAbsorptionDbPerMeterAt10kHz: Double? = nil
+    var largeSignalMaximumVoltageRMS: Double? = nil
+    var largeSignalSteps: Int? = nil
+    var largeSignalDurationSeconds: Double? = nil
+    var thermalResistanceKelvinPerWatt: Double? = nil
+    var thermalTimeConstantSeconds: Double? = nil
+    var maximumCoilTemperatureCelsius: Double? = nil
     var symbols: [SymbolInstance]
     var wires: [WireSegment]
 }
