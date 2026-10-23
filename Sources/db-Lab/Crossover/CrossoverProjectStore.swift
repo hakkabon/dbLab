@@ -32,6 +32,18 @@ struct CrossoverProjectSnapshot: Codable, Identifiable {
     var tweeterFrequencyResponseID: UUID?
     var wooferImpedanceID: UUID?
     var tweeterImpedanceID: UUID?
+    var wooferXOffsetMeters: Double? = nil
+    var wooferYOffsetMeters: Double? = nil
+    var wooferZOffsetMeters: Double? = nil
+    var tweeterXOffsetMeters: Double? = nil
+    var tweeterYOffsetMeters: Double? = nil
+    var tweeterZOffsetMeters: Double? = nil
+    var listeningDistanceMeters: Double? = nil
+    var listeningAngleDegrees: Double? = nil
+    var listenerHeightMeters: Double? = nil
+    var acousticCenterHeightMeters: Double? = nil
+    var floorReflectionCoefficient: Double? = nil
+    var airAbsorptionDbPerMeterAt10kHz: Double? = nil
     var symbols: [SymbolInstance]
     var wires: [WireSegment]
 }

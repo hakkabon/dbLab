@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "DBLabNumeric", targets: ["DBLabNumeric"]),
         .library(name: "DBLabEnclosure", targets: ["DBLabEnclosure"]),
         .library(name: "DBLabSynthesis", targets: ["DBLabSynthesis"]),
+        .library(name: "DBLabAcoustics", targets: ["DBLabAcoustics"]),
         .executable(name: "db-Lab", targets: ["db-Lab"]),
     ],
 
@@ -58,6 +59,11 @@ let package = Package(
             ],
             path: "Sources/DBLabSynthesis"
         ),
+        .target(
+            name: "DBLabAcoustics",
+            dependencies: ["DBLabDomain", "DBLabNumeric"],
+            path: "Sources/DBLabAcoustics"
+        ),
         // ── Main app ─────────────────────────────────────────────────────────
         .target(
             name: "DBLabCore",
@@ -66,6 +72,7 @@ let package = Package(
                 "DBLabNumeric",
                 "DBLabEnclosure",
                 "DBLabSynthesis",
+                "DBLabAcoustics",
             ],
             path: "Sources/db-Lab"
         ),
@@ -79,7 +86,7 @@ let package = Package(
         .testTarget(
             name: "db-LabTests",
             dependencies: [
-                "DBLabCore", "DBLabDomain", "DBLabNumeric", "DBLabEnclosure", "DBLabSynthesis",
+                "DBLabCore", "DBLabDomain", "DBLabNumeric", "DBLabEnclosure", "DBLabSynthesis", "DBLabAcoustics",
                 .product(name: "NumericCoreSparse", package: "Swift-NumericCore"),
             ],
             path: "Tests/db-LabTests",

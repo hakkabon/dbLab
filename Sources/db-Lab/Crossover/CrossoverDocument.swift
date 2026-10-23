@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 import DBLabDomain
 import DBLabSynthesis
+import DBLabAcoustics
 
 @MainActor
 final class CrossoverDocument: ObservableObject, Identifiable {
@@ -51,6 +52,19 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var robustDesignResult: RobustDesignResult?
     @Published var robustDesignError: String?
     @Published var isAnalyzingRobustness = false
+    @Published var wooferXOffsetMeters = 0.0
+    @Published var wooferYOffsetMeters = -0.12
+    @Published var wooferZOffsetMeters = 0.0
+    @Published var tweeterXOffsetMeters = 0.0
+    @Published var tweeterYOffsetMeters = 0.12
+    @Published var tweeterZOffsetMeters = 0.0
+    @Published var listeningDistanceMeters = 2.0
+    @Published var listeningAngleDegrees = 0.0
+    @Published var listenerHeightMeters = 1.0
+    @Published var acousticCenterHeightMeters = 1.0
+    @Published var floorReflectionCoefficient = 0.0
+    @Published var airAbsorptionDbPerMeterAt10kHz = 0.0
+    @Published var spatialAcousticsResult: SpatialAcousticsResult?
     private var schematicSubscription: AnyCancellable?
     private var simulationTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
@@ -87,6 +101,18 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         tweeterFrequencyResponseID = snapshot.tweeterFrequencyResponseID
         wooferImpedanceID = snapshot.wooferImpedanceID
         tweeterImpedanceID = snapshot.tweeterImpedanceID
+        wooferXOffsetMeters = snapshot.wooferXOffsetMeters ?? 0
+        wooferYOffsetMeters = snapshot.wooferYOffsetMeters ?? -0.12
+        wooferZOffsetMeters = snapshot.wooferZOffsetMeters ?? 0
+        tweeterXOffsetMeters = snapshot.tweeterXOffsetMeters ?? 0
+        tweeterYOffsetMeters = snapshot.tweeterYOffsetMeters ?? 0.12
+        tweeterZOffsetMeters = snapshot.tweeterZOffsetMeters ?? 0
+        listeningDistanceMeters = snapshot.listeningDistanceMeters ?? 2
+        listeningAngleDegrees = snapshot.listeningAngleDegrees ?? 0
+        listenerHeightMeters = snapshot.listenerHeightMeters ?? 1
+        acousticCenterHeightMeters = snapshot.acousticCenterHeightMeters ?? 1
+        floorReflectionCoefficient = snapshot.floorReflectionCoefficient ?? 0
+        airAbsorptionDbPerMeterAt10kHz = snapshot.airAbsorptionDbPerMeterAt10kHz ?? 0
         schematic.restore(symbols: snapshot.symbols, wires: snapshot.wires)
         inputNetReference = snapshot.inputNetReference ?? netReference(for: snapshot.inputNetID)
         wooferOutputNetReference = snapshot.wooferOutputNetReference ?? netReference(for: snapshot.wooferOutputNetID)
@@ -126,6 +152,18 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             tweeterFrequencyResponseID: tweeterFrequencyResponseID,
             wooferImpedanceID: wooferImpedanceID,
             tweeterImpedanceID: tweeterImpedanceID,
+            wooferXOffsetMeters: wooferXOffsetMeters,
+            wooferYOffsetMeters: wooferYOffsetMeters,
+            wooferZOffsetMeters: wooferZOffsetMeters,
+            tweeterXOffsetMeters: tweeterXOffsetMeters,
+            tweeterYOffsetMeters: tweeterYOffsetMeters,
+            tweeterZOffsetMeters: tweeterZOffsetMeters,
+            listeningDistanceMeters: listeningDistanceMeters,
+            listeningAngleDegrees: listeningAngleDegrees,
+            listenerHeightMeters: listenerHeightMeters,
+            acousticCenterHeightMeters: acousticCenterHeightMeters,
+            floorReflectionCoefficient: floorReflectionCoefficient,
+            airAbsorptionDbPerMeterAt10kHz: airAbsorptionDbPerMeterAt10kHz,
             symbols: schematic.symbols,
             wires: schematic.wires
         )
@@ -180,6 +218,10 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                 role: .woofer,
                 driverRevision: woofer.domainRevision,
                 terminals: TerminalAssignment(positiveNode: wooferOutputNetID, negativeNode: nil),
+                acousticPosition: .init(
+                    xMeters: wooferXOffsetMeters, yMeters: wooferYOffsetMeters,
+                    zMeters: wooferZOffsetMeters
+                ),
                 enclosure: domainEnclosure(
                     type: wooferEnclosure,
                     volume: wooferBoxVolumeLiters,
@@ -197,6 +239,10 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                 role: .tweeter,
                 driverRevision: tweeter.domainRevision,
                 terminals: TerminalAssignment(positiveNode: tweeterOutputNetID, negativeNode: nil),
+                acousticPosition: .init(
+                    xMeters: tweeterXOffsetMeters, yMeters: tweeterYOffsetMeters,
+                    zMeters: tweeterZOffsetMeters
+                ),
                 enclosure: domainEnclosure(
                     type: tweeterEnclosure,
                     volume: tweeterBoxVolumeLiters,
@@ -214,7 +260,11 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             id: domainSystem?.id ?? id,
             name: name,
             referenceVoltageRMS: 2.83,
-            listeningPosition: domainSystem?.listeningPosition ?? .init(zMeters: 1),
+            listeningPosition: .init(
+                xMeters: listeningDistanceMeters * sin(listeningAngleDegrees * .pi / 180),
+                yMeters: listenerHeightMeters - acousticCenterHeightMeters,
+                zMeters: listeningDistanceMeters * cos(listeningAngleDegrees * .pi / 180)
+            ),
             drivers: instances
         )
     }
@@ -242,6 +292,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         simulationWarnings = []
         acousticResponse = []
         systemSimulationResult = nil
+        spatialAcousticsResult = nil
         guard let wooferID = wooferDriverID,
               let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
                 ?? library.drivers.first(where: { $0.id == wooferID }) else {
@@ -302,6 +353,16 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                     id: tweeterImpedanceID,
                     kind: .impedance,
                     driver: tweeter
+                ),
+                wooferPosition: .init(xMeters: wooferXOffsetMeters, yMeters: wooferYOffsetMeters, zMeters: wooferZOffsetMeters),
+                tweeterPosition: .init(xMeters: tweeterXOffsetMeters, yMeters: tweeterYOffsetMeters, zMeters: tweeterZOffsetMeters),
+                spatialOptions: .init(
+                    listeningDistanceMeters: listeningDistanceMeters,
+                    listeningAngleDegrees: listeningAngleDegrees,
+                    listenerHeightMeters: listenerHeightMeters,
+                    acousticCenterHeightMeters: acousticCenterHeightMeters,
+                    airAbsorptionDecibelsPerMeterAt10kHz: airAbsorptionDbPerMeterAt10kHz,
+                    floorReflectionCoefficient: floorReflectionCoefficient
                 )
             )
             simulationTask?.cancel()
@@ -316,6 +377,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                     self?.simulationWarnings = result.warnings
                     self?.domainSystem = self?.makeDomainSystem()
                     self?.systemSimulationResult = result.domainResult(system: self?.domainSystem)
+                    self?.spatialAcousticsResult = result.spatialAcoustics
                     self?.isSimulating = false
                 } catch is CancellationError {
                     self?.isSimulating = false
@@ -446,6 +508,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         simulationError = nil
         acousticResponse = []
         systemSimulationResult = nil
+        spatialAcousticsResult = nil
     }
 
     private func measurement(
@@ -476,6 +539,9 @@ private struct CrossoverSimulationRequest: Sendable {
     let tweeterFrequencyResponse: DriverMeasurement?
     let wooferImpedance: DriverMeasurement?
     let tweeterImpedance: DriverMeasurement?
+    let wooferPosition: AcousticPosition
+    let tweeterPosition: AcousticPosition
+    let spatialOptions: SpatialAcousticsOptions
 
     func run() throws -> CrossoverSimulationResult {
         try CrossoverNetworkSimulator.simulate(
@@ -489,7 +555,10 @@ private struct CrossoverSimulationRequest: Sendable {
             wooferFrequencyResponse: wooferFrequencyResponse,
             tweeterFrequencyResponse: tweeterFrequencyResponse,
             wooferImpedance: wooferImpedance,
-            tweeterImpedance: tweeterImpedance
+            tweeterImpedance: tweeterImpedance,
+            wooferPosition: wooferPosition,
+            tweeterPosition: tweeterPosition,
+            spatialOptions: spatialOptions
         )
     }
 }

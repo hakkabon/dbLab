@@ -21,6 +21,7 @@ struct CrossoverWorkspaceView: View {
                 }
 
                 crossoverSettings
+                spatialSettings
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 330), alignment: .top)], alignment: .leading, spacing: 16) {
                     driverBranch(
@@ -96,6 +97,7 @@ struct CrossoverWorkspaceView: View {
 
                 if !document.acousticResponse.isEmpty {
                     responsePlot
+                    spatialAcousticsPlots
                     operatingLimitsPlot
                 }
             }
@@ -345,6 +347,43 @@ struct CrossoverWorkspaceView: View {
         }
     }
 
+    private var spatialSettings: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Driver offsets are relative to the cabinet acoustic center. Positive depth moves a driver toward the listener; horizontal polar data uses a circular-piston directivity model.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)],
+                    alignment: .leading, spacing: 12
+                ) {
+                    numericSetting("Listening distance", unit: "m", value: $document.listeningDistanceMeters)
+                    numericSetting("Listening angle", unit: "°", value: $document.listeningAngleDegrees)
+                    numericSetting("Listener height", unit: "m", value: $document.listenerHeightMeters)
+                    numericSetting("Acoustic-center height", unit: "m", value: $document.acousticCenterHeightMeters)
+                    numericSetting("Floor reflection", unit: "−1…1", value: $document.floorReflectionCoefficient)
+                    numericSetting("Air loss at 10 kHz", unit: "dB/m", value: $document.airAbsorptionDbPerMeterAt10kHz)
+                }
+                Divider()
+                Text("Driver acoustic centers").font(.subheadline.weight(.semibold))
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)],
+                    alignment: .leading, spacing: 12
+                ) {
+                    numericSetting("Woofer horizontal", unit: "m", value: $document.wooferXOffsetMeters)
+                    numericSetting("Woofer vertical", unit: "m", value: $document.wooferYOffsetMeters)
+                    numericSetting("Woofer depth", unit: "m", value: $document.wooferZOffsetMeters)
+                    numericSetting("Tweeter horizontal", unit: "m", value: $document.tweeterXOffsetMeters)
+                    numericSetting("Tweeter vertical", unit: "m", value: $document.tweeterYOffsetMeters)
+                    numericSetting("Tweeter depth", unit: "m", value: $document.tweeterZOffsetMeters)
+                }
+            }
+        } label: {
+            Label("Spatial acoustics", systemImage: "dot.radiowaves.left.and.right")
+                .font(.headline)
+        }
+    }
+
     private func synthesizedBranch(_ branch: SynthesizedBranch, title: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.subheadline.weight(.semibold))
@@ -580,6 +619,60 @@ struct CrossoverWorkspaceView: View {
                 .chartXAxisLabel("Frequency (Hz)")
                 .chartYAxisLabel("SPL (dB)")
                 .frame(height: 320)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var spatialAcousticsPlots: some View {
+        if let spatial = document.spatialAcousticsResult {
+            GroupBox("Directivity and spatial response") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Listening-window and sound-power curves are spatial averages. The directivity index is their level difference; polar curves are normalized to the on-axis response at each frequency.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Chart {
+                        ForEach(Array(spatial.listeningWindowResponse.enumerated()), id: \.offset) { index, point in
+                            LineMark(
+                                x: .value("Frequency", point.frequencyHz),
+                                y: .value("Level", point.soundPressureLevelDecibels),
+                                series: .value("Curve", "Listening window")
+                            ).foregroundStyle(.blue)
+                            LineMark(
+                                x: .value("Frequency", spatial.soundPowerResponse[index].frequencyHz),
+                                y: .value("Level", spatial.soundPowerResponse[index].soundPressureLevelDecibels),
+                                series: .value("Curve", "Sound power")
+                            ).foregroundStyle(.purple)
+                        }
+                    }
+                    .chartXScale(type: .log)
+                    .chartXAxisLabel("Frequency (Hz)")
+                    .chartYAxisLabel("SPL (dB)")
+                    .frame(height: 220)
+                    Chart(spatial.polarResponse) { point in
+                        LineMark(
+                            x: .value("Angle", point.angleDegrees),
+                            y: .value("Relative level", point.relativeLevelDecibels),
+                            series: .value("Frequency", point.frequencyHz)
+                        )
+                    }
+                    .chartXAxisLabel("Horizontal angle (°)")
+                    .chartYAxisLabel("Relative level (dB)")
+                    .chartYScale(domain: -30...3)
+                    .frame(height: 240)
+                    Chart {
+                        ForEach(Array(spatial.listeningResponse.enumerated()), id: \.offset) { index, point in
+                            LineMark(
+                                x: .value("Frequency", point.frequencyHz),
+                                y: .value("DI", spatial.directivityIndexDecibels[index])
+                            )
+                        }
+                    }
+                    .chartXScale(type: .log)
+                    .chartXAxisLabel("Frequency (Hz)")
+                    .chartYAxisLabel("Directivity index (dB)")
+                    .frame(height: 180)
+                }
             }
         }
     }

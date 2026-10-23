@@ -2,12 +2,14 @@ import Foundation
 import DBLabDomain
 import DBLabNumeric
 import DBLabEnclosure
+import DBLabAcoustics
 
 struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
     var warnings: [String]
     var trace: [CrossoverTracePoint]
     var solverDiagnostics: [ACSolverDiagnostics]
+    var spatialAcoustics: SpatialAcousticsResult?
 
     func domainResult(system: LoudspeakerSystem?) -> SystemSimulationResult? {
         guard let system, system.drivers.count >= 2 else { return nil }
@@ -34,10 +36,17 @@ struct CrossoverSimulationResult: Sendable {
             portAirVelocityMetersPerSecond: trace.compactMap(\.tweeterPortVelocity).isEmpty
                 ? nil : trace.compactMap(\.tweeterPortVelocity)
         )
+        let positionedPressure = spatialAcoustics?.listeningResponse.map {
+            ComplexTraceSample(
+                frequencyHz: $0.frequencyHz,
+                real: $0.pressure.real / 20e-6,
+                imaginary: $0.pressure.imaginary / 20e-6
+            )
+        }
         return SystemSimulationResult(
             frequenciesHz: trace.map(\.frequencyHz),
             inputImpedance: trace.map { sample($0.frequencyHz, $0.inputImpedance) },
-            combinedAcousticPressure: trace.map {
+            combinedAcousticPressure: positionedPressure ?? trace.map {
                 sample($0.frequencyHz, $0.wooferAcoustic + $0.tweeterAcoustic)
             },
             drivers: [wooferTrace, tweeterTrace],
@@ -146,7 +155,10 @@ enum CrossoverNetworkSimulator {
         wooferFrequencyResponse: DriverMeasurement?,
         tweeterFrequencyResponse: DriverMeasurement?,
         wooferImpedance: DriverMeasurement?,
-        tweeterImpedance: DriverMeasurement?
+        tweeterImpedance: DriverMeasurement?,
+        wooferPosition: AcousticPosition = .init(yMeters: -0.12),
+        tweeterPosition: AcousticPosition = .init(yMeters: 0.12),
+        spatialOptions: SpatialAcousticsOptions? = nil
     ) throws -> CrossoverSimulationResult {
         try simulate(
             symbols: schematic.symbols,
@@ -159,7 +171,10 @@ enum CrossoverNetworkSimulator {
             wooferFrequencyResponse: wooferFrequencyResponse,
             tweeterFrequencyResponse: tweeterFrequencyResponse,
             wooferImpedance: wooferImpedance,
-            tweeterImpedance: tweeterImpedance
+            tweeterImpedance: tweeterImpedance,
+            wooferPosition: wooferPosition,
+            tweeterPosition: tweeterPosition,
+            spatialOptions: spatialOptions
         )
     }
 
@@ -174,7 +189,10 @@ enum CrossoverNetworkSimulator {
         wooferFrequencyResponse: DriverMeasurement?,
         tweeterFrequencyResponse: DriverMeasurement?,
         wooferImpedance: DriverMeasurement?,
-        tweeterImpedance: DriverMeasurement?
+        tweeterImpedance: DriverMeasurement?,
+        wooferPosition: AcousticPosition = .init(yMeters: -0.12),
+        tweeterPosition: AcousticPosition = .init(yMeters: 0.12),
+        spatialOptions: SpatialAcousticsOptions? = nil
     ) throws -> CrossoverSimulationResult {
         guard let inputNetID else { throw CrossoverNetworkSimulationError.missingNode("input") }
         guard let wooferOutputNetID else { throw CrossoverNetworkSimulationError.missingNode("woofer output") }
@@ -355,9 +373,38 @@ enum CrossoverNetworkSimulator {
         if trace.contains(where: { ($0.tweeterPortVelocity ?? 0) > portWarningThreshold }) {
             warnings.append("Tweeter vent air speed exceeds Mach 0.10; increase vent area or reconsider tuning.")
         }
+        let spatial = try spatialOptions.map { options in
+            try SpatialAcousticsSimulator.simulate(
+                sources: [
+                    SpatialSource(
+                        id: "woofer", position: wooferPosition,
+                        radiatingDiameterMeters: 2 * sqrt(woofer.driver.sdSquareCentimeters / 10_000 / .pi),
+                        pressureAtOneMeter: trace.map {
+                            .init(frequencyHz: $0.frequencyHz, real: $0.wooferAcoustic.real * 20e-6, imaginary: $0.wooferAcoustic.imaginary * 20e-6)
+                        }
+                    ),
+                    SpatialSource(
+                        id: "tweeter", position: tweeterPosition,
+                        radiatingDiameterMeters: 2 * sqrt(tweeter.driver.sdSquareCentimeters / 10_000 / .pi),
+                        pressureAtOneMeter: trace.map {
+                            .init(frequencyHz: $0.frequencyHz, real: $0.tweeterAcoustic.real * 20e-6, imaginary: $0.tweeterAcoustic.imaginary * 20e-6)
+                        }
+                    )
+                ],
+                options: options
+            )
+        }
+        if let spatial {
+            points = zip(points, spatial.listeningResponse).map { original, positioned in
+                AcousticResponsePoint(
+                    frequencyHz: original.frequencyHz, wooferDb: original.wooferDb,
+                    tweeterDb: original.tweeterDb, totalDb: positioned.soundPressureLevelDecibels
+                )
+            }
+        }
         return CrossoverSimulationResult(
             response: points, warnings: warnings, trace: trace,
-            solverDiagnostics: solutions.map(\.diagnostics)
+            solverDiagnostics: solutions.map(\.diagnostics), spatialAcoustics: spatial
         )
     }
 
