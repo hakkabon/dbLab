@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import DBLabDomain
 
 struct DriverMeasurementReference: Codable, Hashable, Sendable {
     var referenceVoltageRMS: Double?
@@ -9,6 +10,25 @@ struct DriverMeasurementReference: Codable, Hashable, Sendable {
     var fixture: String?
     var smoothing: String?
     var phaseDescription: String?
+
+    var domainCalibration: MeasurementCalibration {
+        let level: AcousticLevelReference?
+        if let referenceVoltageRMS {
+            level = .voltage(rms: referenceVoltageRMS)
+        } else if let referencePowerWatts {
+            level = .power(watts: referencePowerWatts, nominalImpedanceOhms: 8)
+        } else {
+            level = nil
+        }
+        return MeasurementCalibration(
+            acousticLevelReference: level,
+            distanceMeters: distanceMeters,
+            angleDegrees: angleDegrees,
+            fixture: fixture,
+            smoothing: smoothing,
+            phaseDescription: phaseDescription
+        )
+    }
 }
 
 enum DriverMeasurementKind: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -59,6 +79,12 @@ struct DriverMeasurement: Codable, Hashable, Identifiable, Sendable {
     var sourceSHA256: String? = nil
     var sourceByteCount: Int? = nil
 
+    func normalizedMagnitude(_ magnitude: Double) -> Double {
+        guard kind == .frequencyResponse,
+              let gain = reference?.domainCalibration.gainDecibels() else { return magnitude }
+        return magnitude + gain
+    }
+
     var validationMessage: String? {
         guard !sourceFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "The measurement source file name is missing."
@@ -68,6 +94,19 @@ struct DriverMeasurement: Codable, Hashable, Identifiable, Sendable {
         }
         guard points.count >= 2 else {
             return "A measurement must contain at least two frequency points."
+        }
+        if let reference {
+            if let voltage = reference.referenceVoltageRMS,
+               !voltage.isFinite || voltage <= 0 {
+                return "Measurement reference voltage must be positive and finite."
+            }
+            if let distance = reference.distanceMeters,
+               !distance.isFinite || distance <= 0 {
+                return "Measurement distance must be positive and finite."
+            }
+            if let angle = reference.angleDegrees, !angle.isFinite {
+                return "Measurement angle must be finite."
+            }
         }
         var previousFrequency = 0.0
         for point in points {

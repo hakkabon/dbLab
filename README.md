@@ -37,18 +37,19 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 
 ```text
 Sources/
+├── DBLabDomain/                  # SwiftUI-free domain and simulation contracts
 ├── db-LabApp/                    # Thin executable/application entry point
 └── db-Lab/                       # Reusable DBLabCore target
-├── Shared/                       # App state and navigation
-├── Crossover/                    # Driver library, acoustic model, project workspace
-├── Schematic/                    # Schematic document and connectivity
-│   ├── Models.swift              # Layer 1: Schematic Document
-│   ├── ConnectivityBuilder.swift # Layer 2: Union-Find
-│   ├── ComponentRegistry.swift   # Data-driven descriptors
-│   └── Views/                    # Custom NSView/UIView Canvas
+    ├── Shared/                   # App state and navigation
+    ├── Crossover/                # Driver library, acoustic model, project workspace
+    └── Schematic/                # Schematic document and connectivity
+        ├── Models.swift          # Layer 1: Schematic Document
+        ├── ConnectivityBuilder.swift
+        ├── ComponentRegistry.swift
+        └── Views/                # Custom NSView/UIView Canvas
 ```
 
-`DBLabCore` depends on NumericCore. Complex crossover systems are converted to an equivalent real block system and factored by NumericCore's Accelerate-backed LU solver. The application target contains no numerical engine of its own.
+`DBLabDomain` contains immutable driver revisions, calibrated measurement datasets, N-way loudspeaker-system models, and backend-neutral simulation request/result types without importing SwiftUI. `DBLabCore` adapts the current two-way workspace to those models and depends on NumericCore. Complex crossover systems are converted to an equivalent real block system and factored by NumericCore's Accelerate-backed LU solver. The application target contains no numerical engine of its own.
 
 ## Quick Start
 
@@ -65,10 +66,10 @@ Swift Package Manager resolves the pinned NumericCore revision and its matching 
 1. Open **Speaker Drivers** in the sidebar and add manufacturer data or import a JSON library.
 2. Record the source (manufacturer datasheet URL or reference) with each driver. `Qts` is calculated from `Qes` and `Qms`.
 3. In a driver's editor, import frequency response (`.frd`) or impedance (`.zma`) data as UTF-8 text with two or three columns: frequency (Hz), magnitude (dB SPL for FRD or Ω for ZMA), and optional phase (degrees). Commas, tabs, and whitespace are accepted; comment lines starting with `#`, `;`, `*`, or `//` are ignored.
-4. Record a source URL/reference or measurement conditions before importing. Each dataset retains its filename, source reference, import date, SHA-256 source hash, byte count, frequency points, and whether phase was supplied. Data must contain at least two finite, positive-frequency rows; duplicate frequencies and non-positive impedance magnitudes are rejected.
+4. Record a source URL/reference or measurement conditions before importing. Calibration fields capture reference voltage, distance, angle, fixture, smoothing, and phase reference. Each dataset retains its filename, source reference, import date, SHA-256 source hash, byte count, frequency points, and whether phase was supplied. Data must contain at least two finite, positive-frequency rows; duplicate frequencies and non-positive impedance magnitudes are rejected. FRD levels are normalized non-destructively to 2.83 V / 1 m during simulation.
 5. Export the complete local library as JSON for backup or transfer.
 
-The library is stored in `Application Support/db-Lab/speaker-drivers.json` as a versioned archive; the previous unversioned array format migrates automatically. JSON interchange continues to use an array of driver records and imports merge records by ID.
+The library is stored in `Application Support/db-Lab/speaker-drivers.json` as a versioned archive; the previous unversioned array format migrates automatically. Editing a driver creates a new immutable revision and preserves its preceding revisions in the archive. JSON interchange continues to use an array of current driver records and imports merge records by ID.
 
 ### Speaker System
 1. Create a crossover project and select a woofer and tweeter from the library.
@@ -81,7 +82,7 @@ The network solver supports passive resistors, capacitors, inductors, and induct
 
 This remains a first-pass on-axis estimate, not a measurement-matched full loudspeaker simulation. The virtual source is ideal (no source/output resistance); measured FRD is assumed to represent the complete driver response at 2.83 V / 1 m; the enclosure approximation does not add to measured FRD. Acoustic-center offsets, baffle diffraction, room effects, port losses, cone breakup, power compression, and excursion limits are not modeled. Port length uses a conventional Helmholtz estimate with a simple end correction. The reference crossover frequency is a design note and does not alter the solved network; Bessel filter synthesis and automatic component selection are not implemented.
 
-Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, immutable snapshots of the selected driver revisions and measurements, stable schematic pin references for node assignments, and schematic symbols and wires. Simulations run from an immutable request off the main actor and can be cancelled by starting a new run.
+Crossover projects are automatically saved to `Application Support/db-Lab/crossover-projects.json` using a versioned JSON archive. Project snapshots include crossover and enclosure settings, an N-way domain-system representation, immutable snapshots of selected driver revisions and measurements, stable schematic pin references for node assignments, and schematic symbols and wires. The current workspace remains a two-way compatibility UI while the persisted domain model supports arbitrary driver instances. Simulations run from an immutable request off the main actor and can be cancelled by starting a new run. Results retain complex input impedance, terminal voltage, current, per-driver acoustic pressure, combined pressure, warnings, and backend identity in addition to the displayed SPL curves.
 
 ## Requirements
 - macOS 14+

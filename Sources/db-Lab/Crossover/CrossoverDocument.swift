@@ -1,11 +1,13 @@
 import SwiftUI
 import Combine
+import DBLabDomain
 
 @MainActor
 final class CrossoverDocument: ObservableObject, Identifiable {
     let id: UUID
 
     @Published var name = "Untitled Crossover"
+    @Published var domainSystem: LoudspeakerSystem?
     @Published var targetFrequencyHz = 2_500.0
     @Published var schematic = SchematicDocument()
     @Published var wooferDriverID: UUID?
@@ -32,6 +34,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var wooferImpedanceID: UUID?
     @Published var tweeterImpedanceID: UUID?
     @Published var acousticResponse: [AcousticResponsePoint] = []
+    @Published var systemSimulationResult: SystemSimulationResult?
     @Published var simulationWarnings: [String] = []
     @Published var simulationError: String?
     @Published var isSimulating = false
@@ -46,6 +49,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     init(snapshot: CrossoverProjectSnapshot) {
         id = snapshot.id
         name = snapshot.name
+        domainSystem = snapshot.domainSystem
         targetFrequencyHz = snapshot.targetFrequencyHz
         wooferDriverID = snapshot.wooferDriverID
         tweeterDriverID = snapshot.tweeterDriverID
@@ -78,6 +82,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         CrossoverProjectSnapshot(
             id: id,
             name: name,
+            domainSystem: makeDomainSystem(),
             targetFrequencyHz: targetFrequencyHz,
             wooferDriverID: wooferDriverID,
             tweeterDriverID: tweeterDriverID,
@@ -148,10 +153,79 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         return nil
     }
 
+    private func makeDomainSystem() -> LoudspeakerSystem? {
+        let existingAdditionalDrivers = domainSystem?.drivers.filter {
+            $0.role != .woofer && $0.role != .tweeter
+        } ?? []
+        var instances: [DriverInstance] = []
+        if let woofer = wooferDriverSnapshot {
+            instances.append(DriverInstance(
+                name: "Woofer",
+                role: .woofer,
+                driverRevision: woofer.domainRevision,
+                terminals: TerminalAssignment(positiveNode: wooferOutputNetID, negativeNode: nil),
+                enclosure: domainEnclosure(
+                    type: wooferEnclosure,
+                    volume: wooferBoxVolumeLiters,
+                    tuning: wooferPortTuningHz,
+                    diameter: wooferPortDiameterCentimeters,
+                    baffleWidth: wooferBaffleWidthMeters
+                ),
+                frequencyResponseDatasetID: wooferFrequencyResponseID,
+                impedanceDatasetID: wooferImpedanceID
+            ))
+        }
+        if let tweeter = tweeterDriverSnapshot {
+            instances.append(DriverInstance(
+                name: "Tweeter",
+                role: .tweeter,
+                driverRevision: tweeter.domainRevision,
+                terminals: TerminalAssignment(positiveNode: tweeterOutputNetID, negativeNode: nil),
+                enclosure: domainEnclosure(
+                    type: tweeterEnclosure,
+                    volume: tweeterBoxVolumeLiters,
+                    tuning: tweeterPortTuningHz,
+                    diameter: tweeterPortDiameterCentimeters,
+                    baffleWidth: tweeterBaffleWidthMeters
+                ),
+                frequencyResponseDatasetID: tweeterFrequencyResponseID,
+                impedanceDatasetID: tweeterImpedanceID
+            ))
+        }
+        instances.append(contentsOf: existingAdditionalDrivers)
+        guard !instances.isEmpty else { return domainSystem }
+        return LoudspeakerSystem(
+            id: domainSystem?.id ?? id,
+            name: name,
+            referenceVoltageRMS: 2.83,
+            listeningPosition: domainSystem?.listeningPosition ?? .init(zMeters: 1),
+            drivers: instances
+        )
+    }
+
+    private func domainEnclosure(
+        type: EnclosureType,
+        volume: Double,
+        tuning: Double,
+        diameter: Double,
+        baffleWidth: Double
+    ) -> EnclosureConfiguration {
+        switch type {
+        case .openBaffle: .openBaffle(widthMeters: baffleWidth)
+        case .closedBox: .sealed(netVolumeLiters: volume)
+        case .portedBox: .vented(
+            netVolumeLiters: volume,
+            tuningHz: tuning,
+            portDiameterCentimeters: diameter
+        )
+        }
+    }
+
     func simulate(using library: DriverLibrary) {
         simulationError = nil
         simulationWarnings = []
         acousticResponse = []
+        systemSimulationResult = nil
         guard let wooferID = wooferDriverID,
               let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
                 ?? library.drivers.first(where: { $0.id == wooferID }) else {
@@ -224,6 +298,8 @@ final class CrossoverDocument: ObservableObject, Identifiable {
                     guard !Task.isCancelled else { return }
                     self?.acousticResponse = result.response
                     self?.simulationWarnings = result.warnings
+                    self?.domainSystem = self?.makeDomainSystem()
+                    self?.systemSimulationResult = result.domainResult(system: self?.domainSystem)
                     self?.isSimulating = false
                 } catch is CancellationError {
                     self?.isSimulating = false

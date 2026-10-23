@@ -162,9 +162,12 @@ import Testing
     )
 
     let point = try #require(result.response.first)
+    let trace = try #require(result.trace.first)
     #expect(abs(point.wooferDb - 80 + 20 * log10(2)) < 0.01)
     #expect(abs(point.tweeterDb - 80 + 20 * log10(2)) < 0.01)
     #expect(abs(point.totalDb - 80) < 0.01)
+    #expect(abs(trace.inputImpedance.real - 8) < 0.01)
+    #expect(trace.wooferCurrent.magnitude > 0)
 }
 
 @Test @MainActor func crossoverNetworkUsesMeasuredComplexImpedanceForDriverLoading() throws {
@@ -389,7 +392,11 @@ import Testing
     project.wooferPortDiameterCentimeters = 8
     project.crossoverAlignment = .butterworth
     project.crossoverOrder = 3
-    project.wooferDriverID = UUID(uuidString: "00000000-0000-0000-0000-000000000501")
+    let persistedDriver = sampleSpeakerDriver(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000501")!
+    )
+    project.wooferDriverID = persistedDriver.id
+    project.wooferDriverSnapshot = persistedDriver
     let component = try #require(project.schematic.addComponent(
         descriptorId: "inductor",
         at: GridPoint(4, 2)
@@ -413,6 +420,8 @@ import Testing
     #expect(restored.name == "Living Room Three-way")
     #expect(restored.targetFrequencyHz == 1_850)
     #expect(restored.wooferDriverID == project.wooferDriverID)
+    #expect(restored.domainSystem?.drivers.count == 1)
+    #expect(restored.domainSystem?.drivers.first?.driverRevision.driverID == persistedDriver.id)
     #expect(restored.wooferEnclosure == .portedBox)
     #expect(restored.wooferBoxVolumeLiters == 48)
     #expect(restored.wooferPortTuningHz == 34)

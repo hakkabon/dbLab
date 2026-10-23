@@ -1,10 +1,56 @@
 import Foundation
 import NumericCore
 import NumericCoreAccelerate
+import DBLabDomain
 
 struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
     var warnings: [String]
+    var trace: [CrossoverTracePoint]
+
+    func domainResult(system: LoudspeakerSystem?) -> SystemSimulationResult? {
+        guard let system, system.drivers.count >= 2 else { return nil }
+        let woofer = system.drivers.first(where: { $0.role == .woofer }) ?? system.drivers[0]
+        let tweeter = system.drivers.first(where: { $0.role == .tweeter }) ?? system.drivers[1]
+        func sample(_ frequency: Double, _ value: ComplexValue) -> ComplexTraceSample {
+            ComplexTraceSample(frequencyHz: frequency, real: value.real, imaginary: value.imaginary)
+        }
+        let wooferTrace = DriverSimulationTrace(
+            driverInstanceID: woofer.id,
+            terminalVoltage: trace.map { sample($0.frequencyHz, $0.wooferVoltage) },
+            current: trace.map { sample($0.frequencyHz, $0.wooferCurrent) },
+            acousticPressure: trace.map { sample($0.frequencyHz, $0.wooferAcoustic) }
+        )
+        let tweeterTrace = DriverSimulationTrace(
+            driverInstanceID: tweeter.id,
+            terminalVoltage: trace.map { sample($0.frequencyHz, $0.tweeterVoltage) },
+            current: trace.map { sample($0.frequencyHz, $0.tweeterCurrent) },
+            acousticPressure: trace.map { sample($0.frequencyHz, $0.tweeterAcoustic) }
+        )
+        return SystemSimulationResult(
+            frequenciesHz: trace.map(\.frequencyHz),
+            inputImpedance: trace.map { sample($0.frequencyHz, $0.inputImpedance) },
+            combinedAcousticPressure: trace.map {
+                sample($0.frequencyHz, $0.wooferAcoustic + $0.tweeterAcoustic)
+            },
+            drivers: [wooferTrace, tweeterTrace],
+            diagnostics: SimulationDiagnostics(
+                warnings: warnings,
+                backendIdentifier: "numeric-core-accelerate-lu"
+            )
+        )
+    }
+}
+
+struct CrossoverTracePoint: Sendable {
+    let frequencyHz: Double
+    let inputImpedance: ComplexValue
+    let wooferVoltage: ComplexValue
+    let tweeterVoltage: ComplexValue
+    let wooferCurrent: ComplexValue
+    let tweeterCurrent: ComplexValue
+    let wooferAcoustic: ComplexValue
+    let tweeterAcoustic: ComplexValue
 }
 
 enum CrossoverNetworkSimulationError: LocalizedError {
@@ -138,6 +184,7 @@ enum CrossoverNetworkSimulator {
             .filter { !groundNetIDs.contains($0) && $0 != inputNetID }
             .sorted()
         var points: [AcousticResponsePoint] = []
+        var trace: [CrossoverTracePoint] = []
 
         for frequency in frequencies {
             try Task.checkCancellation()
@@ -182,6 +229,38 @@ enum CrossoverNetworkSimulator {
                 measurement: tweeterFrequencyResponse,
                 frequencyHz: frequency
             ) * (tweeterVoltage / ComplexValue(real: referenceVoltage, imaginary: 0))
+            let wooferLoad = impedance(
+                of: woofer.driver,
+                measurement: wooferImpedance,
+                frequencyHz: frequency
+            )
+            let tweeterLoad = impedance(
+                of: tweeter.driver,
+                measurement: tweeterImpedance,
+                frequencyHz: frequency
+            )
+            let inputCurrent = branches.reduce(ComplexValue(real: 0, imaginary: 0)) { total, branch in
+                if branch.firstNodeID == inputNetID {
+                    let other = voltages[branch.secondNodeID] ?? ComplexValue(real: 0, imaginary: 0)
+                    return total + (ComplexValue(real: referenceVoltage, imaginary: 0) - other) / branch.impedance
+                }
+                if branch.secondNodeID == inputNetID {
+                    let other = voltages[branch.firstNodeID] ?? ComplexValue(real: 0, imaginary: 0)
+                    return total + (ComplexValue(real: referenceVoltage, imaginary: 0) - other) / branch.impedance
+                }
+                return total
+            }
+            let inputImpedance = ComplexValue(real: referenceVoltage, imaginary: 0) / inputCurrent
+            trace.append(CrossoverTracePoint(
+                frequencyHz: frequency,
+                inputImpedance: inputImpedance,
+                wooferVoltage: wooferVoltage,
+                tweeterVoltage: tweeterVoltage,
+                wooferCurrent: wooferVoltage / wooferLoad,
+                tweeterCurrent: tweeterVoltage / tweeterLoad,
+                wooferAcoustic: wooferAcoustic,
+                tweeterAcoustic: tweeterAcoustic
+            ))
             points.append(AcousticResponsePoint(
                 frequencyHz: frequency,
                 wooferDb: decibels(wooferAcoustic.magnitude),
@@ -210,7 +289,7 @@ enum CrossoverNetworkSimulator {
         if wooferFrequencyResponse?.hasPhaseData == false || tweeterFrequencyResponse?.hasPhaseData == false {
             warnings.append("A selected response dataset lacks phase; acoustic summation uses zero phase for that driver.")
         }
-        return CrossoverSimulationResult(response: points, warnings: warnings)
+        return CrossoverSimulationResult(response: points, warnings: warnings, trace: trace)
     }
 
     private static func validateMeasurement(
@@ -421,7 +500,9 @@ enum CrossoverNetworkSimulator {
             return nil
         }
         let (first, second, fraction) = interval
-        let magnitudeDb = first.magnitude + fraction * (second.magnitude - first.magnitude)
+        let firstDb = measurement.normalizedMagnitude(first.magnitude)
+        let secondDb = measurement.normalizedMagnitude(second.magnitude)
+        let magnitudeDb = firstDb + fraction * (secondDb - firstDb)
         let phase = interpolatedPhase(first.phaseDegrees, second.phaseDegrees, fraction: fraction)
         return ComplexValue.polar(
             magnitude: pow(10, magnitudeDb / 20),

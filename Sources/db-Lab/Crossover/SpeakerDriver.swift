@@ -1,13 +1,19 @@
 import Foundation
 import Combine
+import DBLabDomain
 
 private struct DriverLibraryArchive: Codable {
     let schemaVersion: Int
     let drivers: [SpeakerDriver]
+    var archivedRevisions: [SpeakerDriver]? = nil
 }
 
 struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
     var id: UUID = UUID()
+    var revisionID: UUID = UUID()
+    var revision: Int = 1
+    var supersedesRevisionID: UUID?
+    var revisedAt: Date = Date()
     var manufacturer: String
     var model: String
     var source: String
@@ -24,13 +30,18 @@ struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
     var measurements: [DriverMeasurement] = []
 
     private enum CodingKeys: String, CodingKey {
-        case id, manufacturer, model, source, fsHz, qes, qms, vasLiters
+        case id, revisionID, revision, supersedesRevisionID, revisedAt
+        case manufacturer, model, source, fsHz, qes, qms, vasLiters
         case reOhms, leMilliHenries, sdSquareCentimeters, xmaxMillimeters
         case sensitivityDb, notes, measurements
     }
 
     init(
         id: UUID = UUID(),
+        revisionID: UUID = UUID(),
+        revision: Int = 1,
+        supersedesRevisionID: UUID? = nil,
+        revisedAt: Date = Date(),
         manufacturer: String,
         model: String,
         source: String,
@@ -47,6 +58,10 @@ struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
         measurements: [DriverMeasurement] = []
     ) {
         self.id = id
+        self.revisionID = revisionID
+        self.revision = revision
+        self.supersedesRevisionID = supersedesRevisionID
+        self.revisedAt = revisedAt
         self.manufacturer = manufacturer
         self.model = model
         self.source = source
@@ -66,6 +81,10 @@ struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
+        revisionID = try values.decodeIfPresent(UUID.self, forKey: .revisionID) ?? UUID()
+        revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 1
+        supersedesRevisionID = try values.decodeIfPresent(UUID.self, forKey: .supersedesRevisionID)
+        revisedAt = try values.decodeIfPresent(Date.self, forKey: .revisedAt) ?? Date(timeIntervalSince1970: 0)
         manufacturer = try values.decode(String.self, forKey: .manufacturer)
         model = try values.decode(String.self, forKey: .model)
         source = try values.decode(String.self, forKey: .source)
@@ -118,9 +137,10 @@ struct SpeakerDriver: Codable, Identifiable, Hashable, Sendable {
 
 @MainActor
 final class DriverLibrary: ObservableObject {
-    private static let currentSchemaVersion = 1
+    private static let currentSchemaVersion = 2
     @Published private(set) var drivers: [SpeakerDriver] = []
     @Published private(set) var errorMessage: String?
+    private var archivedRevisions: [SpeakerDriver] = []
 
     private let fileURL: URL
     private let encoder: JSONEncoder
@@ -137,12 +157,23 @@ final class DriverLibrary: ObservableObject {
             throw DriverLibraryError.invalidDriver(message)
         }
         var updated = drivers
+        var updatedHistory = archivedRevisions
+        var stored = driver
         if let index = updated.firstIndex(where: { $0.id == driver.id }) {
-            updated[index] = driver
+            let previous = updated[index]
+            if previous != driver {
+                updatedHistory.append(previous)
+                stored.supersedesRevisionID = previous.revisionID
+                stored.revisionID = UUID()
+                stored.revision = previous.revision + 1
+                stored.revisedAt = Date()
+            }
+            updated[index] = stored
         } else {
-            updated.append(driver)
+            updated.append(stored)
         }
-        try persist(updated)
+        try persist(updated, archivedRevisions: updatedHistory)
+        archivedRevisions = updatedHistory
         drivers = updated.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
@@ -150,7 +181,7 @@ final class DriverLibrary: ObservableObject {
     }
 
     func delete(_ driver: SpeakerDriver) throws {
-        try persist(drivers.filter { $0.id != driver.id })
+        try persist(drivers.filter { $0.id != driver.id }, archivedRevisions: archivedRevisions)
         drivers.removeAll { $0.id == driver.id }
         errorMessage = nil
     }
@@ -168,7 +199,7 @@ final class DriverLibrary: ObservableObject {
                 updated.append(driver)
             }
         }
-        try persist(updated)
+        try persist(updated, archivedRevisions: archivedRevisions)
         drivers = updated.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
@@ -177,6 +208,12 @@ final class DriverLibrary: ObservableObject {
 
     func exportJSON() throws -> Data {
         try encoder.encode(drivers)
+    }
+
+    func revisions(for driverID: UUID) -> [SpeakerDriver] {
+        (archivedRevisions + drivers)
+            .filter { $0.id == driverID }
+            .sorted { $0.revision < $1.revision }
     }
 
     func report(_ error: Error) {
@@ -190,12 +227,13 @@ final class DriverLibrary: ObservableObject {
             let decoder = JSONDecoder()
             let stored: [SpeakerDriver]
             if let archive = try? decoder.decode(DriverLibraryArchive.self, from: data) {
-                guard archive.schemaVersion == Self.currentSchemaVersion else {
+                guard (1...Self.currentSchemaVersion).contains(archive.schemaVersion) else {
                     throw DriverLibraryError.invalidDriver(
                         "Speaker driver library version \(archive.schemaVersion) is not supported."
                     )
                 }
                 stored = archive.drivers
+                archivedRevisions = archive.archivedRevisions ?? []
             } else {
                 // Migrate the prototype's unversioned top-level array.
                 stored = try decoder.decode([SpeakerDriver].self, from: data)
@@ -211,7 +249,7 @@ final class DriverLibrary: ObservableObject {
         }
     }
 
-    private func persist(_ drivers: [SpeakerDriver]) throws {
+    private func persist(_ drivers: [SpeakerDriver], archivedRevisions: [SpeakerDriver]) throws {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -219,7 +257,8 @@ final class DriverLibrary: ObservableObject {
             )
             let archive = DriverLibraryArchive(
                 schemaVersion: Self.currentSchemaVersion,
-                drivers: drivers
+                drivers: drivers,
+                archivedRevisions: archivedRevisions
             )
             try encoder.encode(archive).write(to: fileURL, options: .atomic)
         } catch {

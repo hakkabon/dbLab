@@ -131,6 +131,12 @@ private struct DriverEditorView: View {
     @State private var saveError: String?
     @State private var measurementError: String?
     @State private var measurementSourceReference = ""
+    @State private var measurementReferenceVoltage = 2.83
+    @State private var measurementDistanceMeters = 1.0
+    @State private var measurementAngleDegrees = 0.0
+    @State private var measurementFixture = ""
+    @State private var measurementSmoothing = ""
+    @State private var measurementPhaseDescription = ""
     @State private var measurementImportKind: DriverMeasurementKind?
     @State private var isMeasurementImporterPresented = false
     let onSave: (SpeakerDriver) throws -> Void
@@ -157,6 +163,7 @@ private struct DriverEditorView: View {
         NavigationStack {
             Form {
                 Section("Manufacturer data") {
+                    LabeledContent("Revision", value: "\(draft.revision)")
                     TextField("Manufacturer", text: $draft.manufacturer)
                     TextField("Model", text: $draft.model)
                     TextField("Data source (URL or document reference)", text: $draft.source)
@@ -185,6 +192,18 @@ private struct DriverEditorView: View {
                     Text("Import whitespace-, tab-, or comma-separated text: frequency (Hz), magnitude (dB SPL for FRD or Ω for ZMA), and optional phase (degrees).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    DisclosureGroup("Calibration and geometry") {
+                        numberField("Reference voltage", value: $measurementReferenceVoltage, unit: "V RMS")
+                        numberField("Measurement distance", value: $measurementDistanceMeters, unit: "m")
+                        numberField("Measurement angle", value: $measurementAngleDegrees, unit: "°")
+                        TextField("Fixture or enclosure", text: $measurementFixture)
+                        TextField("Smoothing", text: $measurementSmoothing)
+                        TextField("Phase reference", text: $measurementPhaseDescription)
+                        Text("FRD magnitudes are normalized to 2.83 V / 1 m during simulation; original samples remain unchanged.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     HStack {
                         Button("Import FRD", systemImage: "waveform") {
@@ -223,6 +242,11 @@ private struct DriverEditorView: View {
                                 Text(measurement.hasPhaseData ? "Phase included" : "Phase not provided")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if let reference = measurement.reference {
+                                    Text("\(reference.referenceVoltageRMS?.formatted() ?? "—") V · \(reference.distanceMeters?.formatted() ?? "—") m · \(reference.angleDegrees?.formatted() ?? "—")°")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Text("Imported \(measurement.importedAt.formatted(date: .abbreviated, time: .shortened))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -296,11 +320,20 @@ private struct DriverEditorView: View {
                 if accessed { url.stopAccessingSecurityScopedResource() }
             }
             let data = try Data(contentsOf: url)
-            let measurement = try DriverMeasurementParser.parse(
+            var measurement = try DriverMeasurementParser.parse(
                 data,
                 kind: kind,
                 fileName: url.lastPathComponent,
                 sourceReference: measurementSourceReference
+            )
+            measurement.reference = DriverMeasurementReference(
+                referenceVoltageRMS: kind == .frequencyResponse ? measurementReferenceVoltage : nil,
+                referencePowerWatts: nil,
+                distanceMeters: kind == .frequencyResponse ? measurementDistanceMeters : nil,
+                angleDegrees: kind == .frequencyResponse ? measurementAngleDegrees : nil,
+                fixture: measurementFixture.nilIfBlank,
+                smoothing: measurementSmoothing.nilIfBlank,
+                phaseDescription: measurementPhaseDescription.nilIfBlank
             )
             draft.measurements.append(measurement)
             measurementError = nil
@@ -323,6 +356,13 @@ private struct DriverEditorView: View {
                 }
             }
         }
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

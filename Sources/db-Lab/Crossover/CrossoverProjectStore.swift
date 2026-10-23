@@ -1,8 +1,10 @@
 import Foundation
+import DBLabDomain
 
 struct CrossoverProjectSnapshot: Codable, Identifiable {
     var id: UUID
     var name: String
+    var domainSystem: LoudspeakerSystem? = nil
     var targetFrequencyHz: Double
     var wooferDriverID: UUID?
     var tweeterDriverID: UUID?

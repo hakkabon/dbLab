@@ -1,0 +1,7 @@
+{
+  "sourceVoltageRMS": 1.415,
+  "sourceDistanceMeters": 2.0,
+  "targetVoltageRMS": 2.83,
+  "targetDistanceMeters": 1.0,
+  "expectedGainDecibels": 12.041199826559248
+}
