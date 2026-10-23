@@ -1,5 +1,6 @@
 import Foundation
 import DBLabNumeric
+import NumericCore
 
 public struct RobustDesignOptions: Sendable, Hashable, Codable {
     public var componentTolerancePercent: Double
@@ -138,7 +139,7 @@ public enum RobustCrossoverDesigner {
             if !changed { break }
         }
 
-        var generator = SplitMix64(state: options.seed)
+        var generator = SplitMix64Generator(seed: options.seed)
         var lowDB = [[Double]](repeating: [], count: frequencies.count)
         var highDB = [[Double]](repeating: [], count: frequencies.count)
         var impedanceByFrequency = [[Double]](repeating: [], count: frequencies.count)
@@ -147,12 +148,15 @@ public enum RobustCrossoverDesigner {
         var worstError = 0.0
         for sample in 0..<options.sampleCount {
             try Task.checkCancellation()
-            let values = recommended.enumerated().map { index, value in
-                let u = stratified(sample: sample, count: options.sampleCount, dimension: index, generator: &generator)
+            let values = try recommended.enumerated().map { index, value in
+                let u = try StratifiedSampling.unitInterval(
+                    sample: sample, count: options.sampleCount, dimension: index,
+                    generator: &generator
+                )
                 return value * (1 + tolerance * (2 * u - 1))
             }
-            let perturbedLow = perturbLoad(lowLoad, sample: sample, dimension: values.count, options: options, generator: &generator)
-            let perturbedHigh = perturbLoad(highLoad, sample: sample, dimension: values.count + 2, options: options, generator: &generator)
+            let perturbedLow = try perturbLoad(lowLoad, sample: sample, dimension: values.count, options: options, generator: &generator)
+            let perturbedHigh = try perturbLoad(highLoad, sample: sample, dimension: values.count + 2, options: options, generator: &generator)
             let run = try evaluate(values, lowLoad: perturbedLow, highLoad: perturbedHigh)
             for (index, point) in run.points.enumerated() {
                 lowDB[index].append(db(point.lowPassMagnitude))
@@ -165,17 +169,17 @@ public enum RobustCrossoverDesigner {
                run.minimumZ >= request.minimumInputImpedanceOhms { passing += 1 }
         }
 
-        let envelope = frequencies.indices.map { index in
-            let low = lowDB[index].sorted()
-            let high = highDB[index].sorted()
+        let envelope = try frequencies.indices.map { index in
+            let low = lowDB[index]
+            let high = highDB[index]
             return RobustResponseEnvelopePoint(
                 frequencyHz: frequencies[index],
-                lowPassP05Decibels: percentile(low, 0.05),
-                lowPassMedianDecibels: percentile(low, 0.5),
-                lowPassP95Decibels: percentile(low, 0.95),
-                highPassP05Decibels: percentile(high, 0.05),
-                highPassMedianDecibels: percentile(high, 0.5),
-                highPassP95Decibels: percentile(high, 0.95),
+                lowPassP05Decibels: try DescriptiveStatistics.quantile(low, probability: 0.05),
+                lowPassMedianDecibels: try DescriptiveStatistics.quantile(low, probability: 0.5),
+                lowPassP95Decibels: try DescriptiveStatistics.quantile(low, probability: 0.95),
+                highPassP05Decibels: try DescriptiveStatistics.quantile(high, probability: 0.05),
+                highPassMedianDecibels: try DescriptiveStatistics.quantile(high, probability: 0.5),
+                highPassP95Decibels: try DescriptiveStatistics.quantile(high, probability: 0.95),
                 minimumInputImpedanceOhms: impedanceByFrequency[index].min() ?? .nan
             )
         }
@@ -260,10 +264,14 @@ public enum RobustCrossoverDesigner {
 
     private static func perturbLoad(
         _ samples: [ACImpedanceSample], sample: Int, dimension: Int,
-        options: RobustDesignOptions, generator: inout SplitMix64
-    ) -> [ACImpedanceSample] {
-        let magnitudeU = stratified(sample: sample, count: options.sampleCount, dimension: dimension, generator: &generator)
-        let phaseU = stratified(sample: sample, count: options.sampleCount, dimension: dimension + 1, generator: &generator)
+        options: RobustDesignOptions, generator: inout SplitMix64Generator
+    ) throws -> [ACImpedanceSample] {
+        let magnitudeU = try StratifiedSampling.unitInterval(
+            sample: sample, count: options.sampleCount, dimension: dimension, generator: &generator
+        )
+        let phaseU = try StratifiedSampling.unitInterval(
+            sample: sample, count: options.sampleCount, dimension: dimension + 1, generator: &generator
+        )
         let magnitudeFactor = 1 + options.loadMagnitudeTolerancePercent / 100 * (2 * magnitudeU - 1)
         let phaseDelta = options.loadPhaseToleranceDegrees * .pi / 180 * (2 * phaseU - 1)
         return samples.map {
@@ -297,20 +305,6 @@ public enum RobustCrossoverDesigner {
         var result = values; result[index] = value; return result
     }
 
-    private static func percentile(_ sorted: [Double], _ probability: Double) -> Double {
-        guard sorted.count > 1 else { return sorted.first ?? .nan }
-        let position = probability * Double(sorted.count - 1)
-        let lower = Int(floor(position)), upper = Int(ceil(position))
-        return sorted[lower] + (position - Double(lower)) * (sorted[upper] - sorted[lower])
-    }
-
-    private static func stratified(
-        sample: Int, count: Int, dimension: Int, generator: inout SplitMix64
-    ) -> Double {
-        let permutation = (sample * 2_654_435_761 + dimension * 1_013_904_223) % count
-        return (Double(permutation) + generator.nextUnit()) / Double(count)
-    }
-
     private static func parallelMagnitude(_ lhs: ACComplex, _ rhs: ACComplex) -> Double {
         ((lhs * rhs) / (lhs + rhs)).magnitude
     }
@@ -325,17 +319,5 @@ public enum RobustCrossoverDesigner {
               (20...2_000).contains(options.sampleCount) else {
             throw CrossoverSynthesisError.invalidRequest("robust-design tolerances or sample count")
         }
-    }
-}
-
-private struct SplitMix64 {
-    var state: UInt64
-    mutating func nextUnit() -> Double {
-        state &+= 0x9E3779B97F4A7C15
-        var value = state
-        value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
-        value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
-        value ^= value >> 31
-        return Double(value >> 11) / Double(UInt64(1) << 53)
     }
 }

@@ -96,12 +96,20 @@ public enum ACImpedanceModel: Sendable, Hashable, Codable {
         }
         let lowerSample = samples[upper - 1]
         let upperSample = samples[upper]
-        let fraction = log(frequencyHz / lowerSample.frequencyHz) / log(upperSample.frequencyHz / lowerSample.frequencyHz)
-        let magnitude = exp(log(lowerSample.impedance.magnitude) + fraction * log(upperSample.impedance.magnitude / lowerSample.impedance.magnitude))
-        var phaseDelta = upperSample.impedance.phaseRadians - lowerSample.impedance.phaseRadians
-        while phaseDelta > .pi { phaseDelta -= 2 * .pi }
-        while phaseDelta < -.pi { phaseDelta += 2 * .pi }
-        return .polar(magnitude: magnitude, phaseRadians: lowerSample.impedance.phaseRadians + fraction * phaseDelta)
+        let fraction = try NumericalInterpolation.logarithmicFraction(
+            value: frequencyHz, lower: lowerSample.frequencyHz, upper: upperSample.frequencyHz
+        )
+        let magnitude = try NumericalInterpolation.logarithmicMagnitude(
+            lower: lowerSample.impedance.magnitude,
+            upper: upperSample.impedance.magnitude,
+            fraction: fraction
+        )
+        let phase = try NumericalInterpolation.wrappedPhase(
+            lower: lowerSample.impedance.phaseRadians,
+            upper: upperSample.impedance.phaseRadians,
+            fraction: fraction
+        )
+        return .polar(magnitude: magnitude, phaseRadians: phase)
     }
 }
 

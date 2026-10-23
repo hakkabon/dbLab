@@ -1,6 +1,7 @@
 import Foundation
 import DBLabDomain
 import DBLabNumeric
+import NumericCore
 
 public struct SpatialSource: Sendable, Hashable {
     public let id: String
@@ -246,24 +247,7 @@ public enum SpatialAcousticsSimulator {
     private static func circularPistonDirectivity(_ x: Double) -> Double {
         let ax = abs(x)
         guard ax > 1e-7 else { return 1 }
-        return abs(2 * besselJ1(ax) / ax)
-    }
-
-    // Power series in its well-conditioned region and the leading asymptotic
-    // expansion above it. This avoids a platform-specific libm dependency.
-    private static func besselJ1(_ x: Double) -> Double {
-        if x <= 12 {
-            var term = x / 2
-            var sum = term
-            for k in 1...80 {
-                term *= -(x * x / 4) / (Double(k) * Double(k + 1))
-                sum += term
-                if abs(term) < max(abs(sum), 1) * 1e-15 { break }
-            }
-            return sum
-        }
-        let phase = x - 3 * .pi / 4
-        return sqrt(2 / (.pi * x)) * (cos(phase) - 3 * sin(phase) / (8 * x))
+        return abs(2 * SpecialFunctions.besselJ1(ax) / ax)
     }
 
     private static func nearestIndex(to target: Double, in values: [Double]) -> Int {

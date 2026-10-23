@@ -27,10 +27,7 @@ let package = Package(
 
     // ── Dependencies ─────────────────────────────────────────────────────────
     dependencies: [
-        .package(
-            url: "https://github.com/hakkabon/Swift-NumericCore.git",
-            revision: "7318e8c470079b5255142d223750c251e9b2cfe7"
-        ),
+        .package(path: "../Swift-NumericCore"),
     ],
 
     // ── Targets ──────────────────────────────────────────────────────────────
@@ -49,25 +46,26 @@ let package = Package(
         ),
         .target(
             name: "DBLabEnclosure",
-            dependencies: ["DBLabDomain", "DBLabNumeric"],
+            dependencies: ["DBLabDomain", "DBLabNumeric", .product(name: "NumericCore", package: "Swift-NumericCore")],
             path: "Sources/DBLabEnclosure"
         ),
         .target(
             name: "DBLabSynthesis",
             dependencies: [
                 "DBLabNumeric",
+                .product(name: "NumericCore", package: "Swift-NumericCore"),
                 .product(name: "NumericCoreOptimization", package: "Swift-NumericCore"),
             ],
             path: "Sources/DBLabSynthesis"
         ),
         .target(
             name: "DBLabAcoustics",
-            dependencies: ["DBLabDomain", "DBLabNumeric"],
+            dependencies: ["DBLabDomain", "DBLabNumeric", .product(name: "NumericCore", package: "Swift-NumericCore")],
             path: "Sources/DBLabAcoustics"
         ),
         .target(
             name: "DBLabMultiphysics",
-            dependencies: ["DBLabDomain", "DBLabNumeric"],
+            dependencies: ["DBLabDomain", "DBLabNumeric", .product(name: "NumericCore", package: "Swift-NumericCore")],
             path: "Sources/DBLabMultiphysics"
         ),
         // ── Main app ─────────────────────────────────────────────────────────
@@ -80,6 +78,7 @@ let package = Package(
                 "DBLabSynthesis",
                 "DBLabAcoustics",
                 "DBLabMultiphysics",
+                .product(name: "NumericCore", package: "Swift-NumericCore"),
             ],
             path: "Sources/db-Lab"
         ),
