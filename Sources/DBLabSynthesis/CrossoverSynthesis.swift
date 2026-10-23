@@ -1,6 +1,7 @@
 import Foundation
 import DBLabNumeric
 import NumericCoreOptimization
+import NumericCore
 
 public enum SynthesisAlignment: String, Codable, Sendable, Hashable {
     case butterworth
@@ -154,16 +155,10 @@ public enum PassiveCrossoverSynthesizer {
         ) { point in
             try Task.checkCancellation()
             let value = try objective(point)
-            var gradient = [Double](repeating: 0, count: point.count)
-            let step = 2e-4
-            for index in point.indices {
-                var plus = point
-                var minus = point
-                plus[index] += step
-                minus[index] -= step
-                gradient[index] = (try objective(plus) - objective(minus)) / (2 * step)
-            }
-            return (value, gradient)
+            let gradient = try FiniteDifference.centralGradient(
+                at: point, relativeStep: 2e-4, objective: objective
+            )
+            return (value, gradient.gradient)
         }
         let continuousValues = optimized.point.map(exp)
         let values = continuousValues.map(preferredE24)
@@ -365,8 +360,9 @@ public enum PassiveCrossoverSynthesizer {
     private static func db(_ value: Double) -> Double { 20 * log10(max(value, 1e-9)) }
 
     private static func logFrequencies(start: Double, stop: Double, pointsPerOctave: Int) -> [Double] {
-        let count = max(2, Int(ceil(log2(stop / start) * Double(pointsPerOctave))))
-        return (0...count).map { start * pow(stop / start, Double($0) / Double(count)) }
+        (try? NumericalGrid.logarithmic(
+            from: start, through: stop, pointsPerOctave: pointsPerOctave
+        )) ?? []
     }
 
     private static func validate(_ request: CrossoverSynthesisRequest) throws {

@@ -2,6 +2,7 @@ import Foundation
 import DBLabDomain
 import DBLabEnclosure
 import DBLabNumeric
+import NumericCore
 
 enum EnclosureType: String, CaseIterable, Identifiable, Codable, Sendable {
     case openBaffle = "Open baffle"
@@ -107,7 +108,7 @@ enum AcousticSimulator {
         try validate(woofer)
         try validate(tweeter)
 
-        let frequencies = logFrequencies(start: 20, stop: 20_000, pointsPerOctave: 24)
+        let frequencies = try NumericalGrid.logarithmic(from: 20, through: 20_000, pointsPerOctave: 24)
         let response = frequencies.map { frequency in
             let w = branchResponse(
                 woofer,
@@ -244,13 +245,6 @@ enum AcousticSimulator {
             transfer = transfer * -1
         }
         return transfer
-    }
-
-    private static func logFrequencies(start: Double, stop: Double, pointsPerOctave: Int) -> [Double] {
-        let count = Int(ceil(log2(stop / start) * Double(pointsPerOctave)))
-        return (0...count).map { index in
-            min(start * pow(2, Double(index) / Double(pointsPerOctave)), stop)
-        }
     }
 
     private static func db(_ magnitude: Double) -> Double {

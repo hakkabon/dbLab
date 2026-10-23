@@ -1,6 +1,7 @@
 import Foundation
 import DBLabDomain
 import DBLabNumeric
+import NumericCore
 
 public struct LargeSignalDriverParameters: Sendable, Hashable, Codable {
     public let driverInstanceID: UUID
@@ -149,7 +150,7 @@ public enum LargeSignalSimulator {
                 let currents = trace.current.map { hypot($0.real, $0.imaginary) * scale }
                 let meanCurrentSquared = currents.map { $0 * $0 }.reduce(0, +) / Double(currents.count)
                 let coldPower = meanCurrentSquared * parameters.dcResistanceOhms
-                let thermal = thermalState(coldPowerWatts: coldPower, parameters: parameters, options: options)
+                let thermal = try thermalState(coldPowerWatts: coldPower, parameters: parameters, options: options)
                 totalIterations += thermal.iterations
                 let thermalGain = parameters.dcResistanceOhms / thermal.hotResistance
 
@@ -223,22 +224,21 @@ public enum LargeSignalSimulator {
     private static func thermalState(
         coldPowerWatts: Double, parameters: LargeSignalDriverParameters,
         options: LargeSignalOptions
-    ) -> (temperature: Double, hotResistance: Double, power: Double, iterations: Int) {
+    ) throws -> (temperature: Double, hotResistance: Double, power: Double, iterations: Int) {
         let transientFraction = 1 - exp(-options.stimulusDurationSeconds / parameters.thermalTimeConstantSeconds)
-        var rise = 0.0
-        var iterations = 0
-        for iteration in 1...40 {
+        let solved = try FixedPointSolver.solve(
+            initial: 0,
+            options: .init(maximumIterations: 40, absoluteTolerance: 1e-8, relaxation: 0.5)
+        ) { rise in
             let resistanceRatio = 1 + parameters.resistanceTemperatureCoefficientPerKelvin * rise
             let power = coldPowerWatts / max(resistanceRatio, 1e-12)
-            let next = power * parameters.thermalResistanceKelvinPerWatt * transientFraction
-            iterations = iteration
-            if abs(next - rise) < 1e-8 { rise = next; break }
-            rise = 0.5 * (rise + next)
+            return power * parameters.thermalResistanceKelvinPerWatt * transientFraction
         }
+        let rise = solved.value
         let hotResistance = parameters.dcResistanceOhms
             * (1 + parameters.resistanceTemperatureCoefficientPerKelvin * rise)
         let power = coldPowerWatts * parameters.dcResistanceOhms / hotResistance
-        return (options.ambientTemperatureCelsius + rise, hotResistance, power, iterations)
+        return (options.ambientTemperatureCelsius + rise, hotResistance, power, solved.iterations)
     }
 
     private static func validate(

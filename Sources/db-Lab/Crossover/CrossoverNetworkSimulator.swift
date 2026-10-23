@@ -3,6 +3,7 @@ import DBLabDomain
 import DBLabNumeric
 import DBLabEnclosure
 import DBLabAcoustics
+import NumericCore
 
 struct CrossoverSimulationResult: Sendable {
     var response: [AcousticResponsePoint]
@@ -134,7 +135,9 @@ enum CrossoverNetworkSimulator {
             throw CrossoverNetworkSimulationError.noFrequencyOverlap
         }
         let model = try AcousticSimulator.enclosureModel(for: branch)
-        return logFrequencies(start: lower, stop: upper, pointsPerOctave: pointsPerOctave).map {
+        return try NumericalGrid.logarithmic(
+            from: lower, through: upper, pointsPerOctave: pointsPerOctave
+        ).map {
             ACImpedanceSample(
                 frequencyHz: $0,
                 impedance: loadImpedance(
@@ -233,9 +236,9 @@ enum CrossoverNetworkSimulator {
         guard bounds.lowerBound < bounds.upperBound else {
             throw CrossoverNetworkSimulationError.noFrequencyOverlap
         }
-        let frequencies = logFrequencies(
-            start: bounds.lowerBound,
-            stop: bounds.upperBound,
+        let frequencies = try NumericalGrid.logarithmic(
+            from: bounds.lowerBound,
+            through: bounds.upperBound,
             pointsPerOctave: pointsPerOctave
         )
         let wooferEnclosureModel: EnclosureModel
@@ -586,12 +589,12 @@ enum CrossoverNetworkSimulator {
         let (first, second, fraction) = interval
         let firstMagnitude = first.magnitude
         let secondMagnitude = second.magnitude
-        let magnitude = exp(log(firstMagnitude) + fraction * (log(secondMagnitude) - log(firstMagnitude)))
-        let phase = interpolatedPhase(
-            first.phaseDegrees,
-            second.phaseDegrees,
-            fraction: fraction
-        )
+        guard let magnitude = try? NumericalInterpolation.logarithmicMagnitude(
+            lower: firstMagnitude, upper: secondMagnitude, fraction: fraction
+        ), let phase = try? NumericalInterpolation.wrappedPhase(
+            lower: first.phaseDegrees, upper: second.phaseDegrees,
+            fraction: fraction, period: 360
+        ) else { return nil }
         return ComplexValue.polar(magnitude: magnitude, phaseRadians: phase * .pi / 180)
     }
 
@@ -607,7 +610,10 @@ enum CrossoverNetworkSimulator {
         let firstDb = measurement.normalizedMagnitude(first.magnitude)
         let secondDb = measurement.normalizedMagnitude(second.magnitude)
         let magnitudeDb = firstDb + fraction * (secondDb - firstDb)
-        let phase = interpolatedPhase(first.phaseDegrees, second.phaseDegrees, fraction: fraction)
+        guard let phase = try? NumericalInterpolation.wrappedPhase(
+            lower: first.phaseDegrees, upper: second.phaseDegrees,
+            fraction: fraction, period: 360
+        ) else { return nil }
         return ComplexValue.polar(
             magnitude: pow(10, magnitudeDb / 20),
             phaseRadians: phase * .pi / 180
@@ -634,22 +640,10 @@ enum CrossoverNetworkSimulator {
         }
         let lower = points[upperIndex - 1]
         let upper = points[upperIndex]
-        let fraction = log(frequencyHz / lower.frequencyHz) / log(upper.frequencyHz / lower.frequencyHz)
+        guard let fraction = try? NumericalInterpolation.logarithmicFraction(
+            value: frequencyHz, lower: lower.frequencyHz, upper: upper.frequencyHz
+        ) else { return nil }
         return (lower, upper, fraction)
-    }
-
-    private static func interpolatedPhase(_ first: Double, _ second: Double, fraction: Double) -> Double {
-        var difference = second - first
-        while difference > 180 { difference -= 360 }
-        while difference < -180 { difference += 360 }
-        return first + fraction * difference
-    }
-
-    private static func logFrequencies(start: Double, stop: Double, pointsPerOctave: Int) -> [Double] {
-        let intervals = max(1, Int(ceil(log2(stop / start) * Double(pointsPerOctave))))
-        return (0...intervals).map {
-            start * pow(stop / start, Double($0) / Double(intervals))
-        }
     }
 
     private static func decibels(_ magnitude: Double) -> Double {
