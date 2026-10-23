@@ -1,9 +1,11 @@
 import Charts
 import SwiftUI
+import DBLabSynthesis
 
 struct CrossoverWorkspaceView: View {
     @ObservedObject var document: CrossoverDocument
     @ObservedObject var driverLibrary: DriverLibrary
+    @State private var isApplySynthesisConfirmationPresented = false
 
     var body: some View {
         ScrollView {
@@ -46,6 +48,8 @@ struct CrossoverWorkspaceView: View {
                         band: .highPass
                     )
                 }
+
+                synthesisPanel
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Custom passive LCR crossover")
@@ -98,6 +102,18 @@ struct CrossoverWorkspaceView: View {
             .padding(24)
         }
         .navigationTitle(document.name)
+        .confirmationDialog(
+            "Replace the current crossover schematic?",
+            isPresented: $isApplySynthesisConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Replace schematic", role: .destructive) {
+                document.applySynthesizedCrossover()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The synthesized ladder and its node assignments will replace the current symbols and wires.")
+        }
     }
 
     private var crossoverSettings: some View {
@@ -105,8 +121,35 @@ struct CrossoverWorkspaceView: View {
             VStack(alignment: .leading, spacing: 8) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 14) {
                     numericSetting("Target crossover frequency (reference)", unit: "Hz", value: $document.targetFrequencyHz)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Synthesis alignment").font(.caption).foregroundStyle(.secondary)
+                        Picker("Synthesis alignment", selection: $document.crossoverAlignment) {
+                            ForEach(CrossoverAlignment.allCases) { alignment in
+                                Text(alignment.rawValue).tag(alignment)
+                            }
+                        }
+                        .labelsHidden()
+                        .onChange(of: document.crossoverAlignment) { _, alignment in
+                            if alignment == .linkwitzRiley,
+                               document.crossoverOrder != 2 && document.crossoverOrder != 4 {
+                                document.crossoverOrder = 4
+                            }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Electrical order").font(.caption).foregroundStyle(.secondary)
+                        Picker("Electrical order", selection: $document.crossoverOrder) {
+                            ForEach(
+                                document.crossoverAlignment == .linkwitzRiley ? [2, 4] : [1, 2, 3, 4],
+                                id: \.self
+                            ) { order in
+                                Text("\(order)").tag(order)
+                            }
+                        }
+                        .labelsHidden()
+                    }
                 }
-                Text("Reference only; the schematic components determine the simulated crossover.")
+                Text("These targets drive synthesis; after application, schematic components determine the simulated crossover.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -115,6 +158,110 @@ struct CrossoverWorkspaceView: View {
             Label("Two-way system", systemImage: "slider.horizontal.3")
                 .font(.headline)
         }
+    }
+
+    private var synthesisPanel: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Generate a passive ladder from the selected drivers, enclosure loading, target alignment, and order. NumericCore refines classical prototype values against both complex loads.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .bottom, spacing: 12) {
+                    numericSetting(
+                        "Minimum system impedance", unit: "Ω",
+                        value: $document.synthesisMinimumImpedanceOhms
+                    )
+                    Button {
+                        document.synthesizeCrossover(using: driverLibrary)
+                    } label: {
+                        if document.isSynthesizing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Synthesize crossover", systemImage: "wand.and.stars")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        document.isSynthesizing
+                            || document.wooferDriverID == nil
+                            || document.tweeterDriverID == nil
+                    )
+                }
+                if let error = document.synthesisError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
+                if let result = document.synthesisResult {
+                    HStack(spacing: 18) {
+                        Text("RMS fit error: \(result.rmsMagnitudeErrorDecibels.formatted(.number.precision(.fractionLength(2)))) dB")
+                        Text("Minimum input: \(result.minimumInputImpedanceOhms.formatted(.number.precision(.fractionLength(2)))) Ω")
+                        Text("\(result.preferredValueSeries) values")
+                        Text("\(result.iterations) iterations")
+                    }
+                    .font(.caption.monospacedDigit())
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 260), alignment: .leading)],
+                        alignment: .leading, spacing: 8
+                    ) {
+                        synthesizedBranch(result.lowPass, title: "Woofer low-pass")
+                        synthesizedBranch(result.highPass, title: "Tweeter high-pass")
+                    }
+                    Chart {
+                        ForEach(result.response, id: \.frequencyHz) { point in
+                            LineMark(
+                                x: .value("Frequency", point.frequencyHz),
+                                y: .value("Magnitude", 20 * log10(max(point.lowPassMagnitude, 1e-9))),
+                                series: .value("Curve", "Low-pass optimized")
+                            )
+                            .foregroundStyle(.blue)
+                            LineMark(
+                                x: .value("Frequency", point.frequencyHz),
+                                y: .value("Magnitude", 20 * log10(max(point.highPassMagnitude, 1e-9))),
+                                series: .value("Curve", "High-pass optimized")
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                    }
+                    .chartXScale(type: .log)
+                    .chartXAxisLabel("Frequency (Hz)")
+                    .chartYAxisLabel("Electrical transfer (dB)")
+                    .frame(height: 210)
+                    Button("Apply synthesized schematic", systemImage: "point.3.connected.trianglepath.dotted") {
+                        isApplySynthesisConfirmationPresented = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        } label: {
+            Label("Crossover synthesis", systemImage: "function")
+                .font(.headline)
+        }
+    }
+
+    private func synthesizedBranch(_ branch: SynthesizedBranch, title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.semibold))
+            ForEach(branch.components) { component in
+                Text("\(componentLabel(component.kind)): \(componentValue(component))")
+                    .font(.caption.monospacedDigit())
+            }
+        }
+    }
+
+    private func componentLabel(_ kind: SynthesizedComponentKind) -> String {
+        switch kind {
+        case .seriesInductor: "Series L"
+        case .shuntCapacitor: "Shunt C"
+        case .seriesCapacitor: "Series C"
+        case .shuntInductor: "Shunt L"
+        }
+    }
+
+    private func componentValue(_ component: SynthesizedComponent) -> String {
+        if component.kind.isInductor {
+            return "\((component.value * 1_000).formatted(.number.precision(.significantDigits(4)))) mH"
+        }
+        return "\((component.value * 1_000_000).formatted(.number.precision(.significantDigits(4)))) µF"
     }
 
     private func driverBranch(

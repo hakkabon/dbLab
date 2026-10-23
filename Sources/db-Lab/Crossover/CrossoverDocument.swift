@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import DBLabDomain
+import DBLabSynthesis
 
 @MainActor
 final class CrossoverDocument: ObservableObject, Identifiable {
@@ -38,8 +39,13 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var simulationWarnings: [String] = []
     @Published var simulationError: String?
     @Published var isSimulating = false
+    @Published var synthesisMinimumImpedanceOhms = 3.2
+    @Published var synthesisResult: CrossoverSynthesisResult?
+    @Published var synthesisError: String?
+    @Published var isSynthesizing = false
     private var schematicSubscription: AnyCancellable?
     private var simulationTask: Task<Void, Never>?
+    private var synthesisTask: Task<Void, Never>?
 
     init() {
         id = UUID()
@@ -312,6 +318,85 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             simulationError = error.localizedDescription
             isSimulating = false
         }
+    }
+
+    func synthesizeCrossover(using library: DriverLibrary) {
+        synthesisError = nil
+        synthesisResult = nil
+        guard let wooferID = wooferDriverID,
+              let woofer = wooferDriverSnapshot.flatMap({ $0.id == wooferID ? $0 : nil })
+                ?? library.drivers.first(where: { $0.id == wooferID }) else {
+            synthesisError = AcousticSimulationError.missingDriver("woofer").localizedDescription
+            return
+        }
+        guard let tweeterID = tweeterDriverID,
+              let tweeter = tweeterDriverSnapshot.flatMap({ $0.id == tweeterID ? $0 : nil })
+                ?? library.drivers.first(where: { $0.id == tweeterID }) else {
+            synthesisError = AcousticSimulationError.missingDriver("tweeter").localizedDescription
+            return
+        }
+        do {
+            let wooferBranch = AcousticBranchSettings(
+                driver: woofer, enclosure: wooferEnclosure,
+                boxVolumeLiters: wooferBoxVolumeLiters, portTuningHz: wooferPortTuningHz,
+                portDiameterCentimeters: wooferPortDiameterCentimeters,
+                baffleWidthMeters: wooferBaffleWidthMeters, band: .lowPass
+            )
+            let tweeterBranch = AcousticBranchSettings(
+                driver: tweeter, enclosure: tweeterEnclosure,
+                boxVolumeLiters: tweeterBoxVolumeLiters, portTuningHz: tweeterPortTuningHz,
+                portDiameterCentimeters: tweeterPortDiameterCentimeters,
+                baffleWidthMeters: tweeterBaffleWidthMeters, band: .highPass
+            )
+            let request = CrossoverSynthesisRequest(
+                crossoverFrequencyHz: targetFrequencyHz,
+                alignment: crossoverAlignment == .butterworth ? .butterworth : .linkwitzRiley,
+                order: crossoverOrder,
+                lowPassLoad: try CrossoverNetworkSimulator.synthesisLoadSamples(
+                    branch: wooferBranch,
+                    impedanceMeasurement: try measurement(id: wooferImpedanceID, kind: .impedance, driver: woofer),
+                    crossoverFrequencyHz: targetFrequencyHz
+                ),
+                highPassLoad: try CrossoverNetworkSimulator.synthesisLoadSamples(
+                    branch: tweeterBranch,
+                    impedanceMeasurement: try measurement(id: tweeterImpedanceID, kind: .impedance, driver: tweeter),
+                    crossoverFrequencyHz: targetFrequencyHz
+                ),
+                minimumInputImpedanceOhms: synthesisMinimumImpedanceOhms
+            )
+            synthesisTask?.cancel()
+            isSynthesizing = true
+            synthesisTask = Task { [weak self] in
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        try PassiveCrossoverSynthesizer.synthesize(request)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    self?.synthesisResult = result
+                    self?.isSynthesizing = false
+                } catch is CancellationError {
+                    self?.isSynthesizing = false
+                } catch {
+                    self?.synthesisError = error.localizedDescription
+                    self?.isSynthesizing = false
+                }
+            }
+        } catch {
+            synthesisError = error.localizedDescription
+            isSynthesizing = false
+        }
+    }
+
+    func applySynthesizedCrossover() {
+        guard let synthesisResult else { return }
+        let generated = CrossoverSchematicSynthesizer.makeSchematic(from: synthesisResult)
+        schematic.restore(symbols: generated.symbols, wires: generated.wires)
+        inputNetReference = generated.inputReference
+        wooferOutputNetReference = generated.wooferOutputReference
+        tweeterOutputNetReference = generated.tweeterOutputReference
+        simulationError = nil
+        acousticResponse = []
+        systemSimulationResult = nil
     }
 
     private func measurement(

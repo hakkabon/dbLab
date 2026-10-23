@@ -107,6 +107,34 @@ enum CrossoverNetworkSimulator {
     private static let referenceVoltage = 2.83
     private static let pointsPerOctave = 24
 
+    static func synthesisLoadSamples(
+        branch: AcousticBranchSettings,
+        impedanceMeasurement: DriverMeasurement?,
+        crossoverFrequencyHz: Double,
+        pointsPerOctave: Int = 8
+    ) throws -> [ACImpedanceSample] {
+        try validateAcousticBranch(branch, validateEnclosure: true)
+        try validateMeasurement(impedanceMeasurement, kind: .impedance, driver: branch.driver)
+        let lower = crossoverFrequencyHz / 4
+        let upper = crossoverFrequencyHz * 4
+        guard lower.isFinite, lower > 0, upper.isFinite,
+              impedanceMeasurement == nil || (
+                impedanceMeasurement!.points.first!.frequencyHz <= lower
+                    && impedanceMeasurement!.points.last!.frequencyHz >= upper
+              ) else {
+            throw CrossoverNetworkSimulationError.noFrequencyOverlap
+        }
+        let model = try AcousticSimulator.enclosureModel(for: branch)
+        return logFrequencies(start: lower, stop: upper, pointsPerOctave: pointsPerOctave).map {
+            ACImpedanceSample(
+                frequencyHz: $0,
+                impedance: loadImpedance(
+                    measurement: impedanceMeasurement, enclosureModel: model, frequencyHz: $0
+                ).acComplex
+            )
+        }
+    }
+
     @MainActor
     static func simulate(
         schematic: SchematicDocument,
